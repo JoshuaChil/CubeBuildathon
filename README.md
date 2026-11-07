@@ -42,7 +42,7 @@ While collecting training data, a rider presses a **button** on the box each tim
               Bump classifier    Map / priority dashboard
 ```
 
-The full design is in [docs/architecture.md](docs/architecture.md). The data format that every subteam builds against is in [docs/data-schema.md](docs/data-schema.md).
+The full design is in [docs/architecture.md](docs/architecture.md). The data format that every subteam builds against is in [docs/data-schema.md](docs/data-schema.md). How the processing algorithm turns vibration into a road map is explained in [docs/algorithm.md](docs/algorithm.md).
 
 ## Try it
 
