@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import CoreBluetooth
+import CoreLocation
 import UIKit
 
 /// Glues Bluetooth → labelling → GPS tagging → CSV file + network forwarding.
@@ -13,8 +14,12 @@ final class SessionViewModel: ObservableObject {
     let recorder = DatasetRecorder()
     /// Live road analysis from the computer (listener.py --analyze).
     let analysis = AnalysisClient()
+    /// Recorded ride played back instead of the sensor (no ESP32 needed).
+    let demo = DemoRide()
 
     @Published private(set) var isReading = false
+    /// True while the app runs on the bundled demo ride instead of a Bluetooth sensor.
+    @Published private(set) var isDemo = false
     /// True while rows should be labelled "Crack/Pothole Detected" = 1.
     @Published private(set) var isMarking = false
     @Published private(set) var recentSamples: [IMUSample] = []
@@ -42,6 +47,8 @@ final class SessionViewModel: ObservableObject {
     init() {
         bluetooth.deviceNamePrefix = settings.deviceNamePrefix
         bluetooth.onLine = { [weak self] line in self?.handle(line: line) }
+        demo.onLine = { [weak self] line, fix in self?.handle(line: line, location: fix) }
+        demo.onFinished = { [weak self] in self?.stopReadings() }
         location.requestAuthorization()
 
         // Re-publish child changes so views observing the session update too.
@@ -88,7 +95,19 @@ final class SessionViewModel: ObservableObject {
         }
         location.requestAuthorization()
         location.start()
-        bluetooth.startStreaming()
+        if isDemo {
+            do {
+                try demo.start()
+            } catch {
+                errorMessage = error.localizedDescription
+                recorder.endSession()
+                forwarder.stop()
+                analysis.stop()
+                return
+            }
+        } else {
+            bluetooth.startStreaming()
+        }
 
         recentSamples.removeAll()
         pending.removeAll()
@@ -107,7 +126,11 @@ final class SessionViewModel: ObservableObject {
 
     func stopReadings() {
         guard isReading else { return }
-        bluetooth.stopStreaming()
+        if isDemo {
+            demo.stop()
+        } else {
+            bluetooth.stopStreaming()
+        }
         recorder.endSession()
         forwarder.stop()
         analysis.stop()
@@ -117,6 +140,17 @@ final class SessionViewModel: ObservableObject {
         stopTimer()
         tick()
         rowsPerSecond = 0
+    }
+
+    /// Use the bundled demo ride instead of a sensor (Scan screen → Demo ride).
+    func enterDemo() {
+        guard !isReading else { return }
+        isDemo = true
+    }
+
+    func exitDemo() {
+        stopReadings()
+        isDemo = false
     }
 
     func disconnect() {
@@ -160,10 +194,11 @@ final class SessionViewModel: ObservableObject {
 
     // MARK: - Incoming data
 
-    private func handle(line: String) {
+    /// `location` overrides the phone's GPS (the demo ride carries its own recorded fixes).
+    private func handle(line: String, location fix: CLLocation? = nil) {
         pendingRawLine = line
         guard isReading else { return }
-        guard let sample = IMUSample.parse(line, location: location.latest, detected: isMarking) else {
+        guard let sample = IMUSample.parse(line, location: fix ?? location.latest, detected: isMarking) else {
             pendingParseErrors += 1
             return
         }

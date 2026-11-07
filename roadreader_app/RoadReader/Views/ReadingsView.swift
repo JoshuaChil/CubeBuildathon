@@ -50,19 +50,27 @@ struct ReadingsView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
-                .disabled(!session.bluetooth.canStream)
+                .disabled(!session.isDemo && !session.bluetooth.canStream)
 
-                if !session.bluetooth.canStream {
+                if !session.isDemo && !session.bluetooth.canStream {
                     Text("Waiting for the device to expose a data characteristic…")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
 
-                Button("Disconnect", role: .destructive) {
-                    session.disconnect()
+                if session.isDemo {
+                    Button("Exit demo", role: .destructive) {
+                        session.exitDemo()
+                    }
+                    .font(.footnote)
+                    .padding(.top, 4)
+                } else {
+                    Button("Disconnect", role: .destructive) {
+                        session.disconnect()
+                    }
+                    .font(.footnote)
+                    .padding(.top, 4)
                 }
-                .font(.footnote)
-                .padding(.top, 4)
             }
         }
         .padding()
@@ -77,18 +85,18 @@ private struct StatusCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Circle().fill(.green).frame(width: 10, height: 10)
-                Text(session.bluetooth.state.deviceName ?? "Device")
+                Circle().fill(session.isDemo ? .purple : .green).frame(width: 10, height: 10)
+                Text(session.isDemo ? "Demo ride (recorded sensor data)" : (session.bluetooth.state.deviceName ?? "Device"))
                     .font(.headline)
                 Spacer()
                 if session.isReading {
-                    Text(session.bluetooth.isSubscribed ? "Streaming" : "Subscribing…")
+                    Text(session.isDemo ? "Playing \(Int(session.demo.progress * 100))%" : (session.bluetooth.isSubscribed ? "Streaming" : "Subscribing…"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
             HStack(spacing: 16) {
-                statusItem(icon: "location.fill", text: gpsText, ok: session.location.hasFix)
+                statusItem(icon: "location.fill", text: session.isDemo ? "GPS: recorded route" : gpsText, ok: session.isDemo || session.location.hasFix)
                 statusItem(icon: "wifi", text: forwardText, ok: session.forwarder.status == .ready)
             }
             .font(.caption)

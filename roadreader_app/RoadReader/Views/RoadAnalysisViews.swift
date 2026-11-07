@@ -93,6 +93,8 @@ struct ConditionPill: View {
         VStack(spacing: 1) {
             Text(RoadCondition.title(condition))
                 .font(.subheadline.weight(.bold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
             Text(iri.map { String(format: "IRI %.1f", $0) } ?? "IRI –")
                 .font(.caption2.monospacedDigit())
         }

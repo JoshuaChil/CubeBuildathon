@@ -82,15 +82,30 @@ struct ScanView: View {
     }
 
     private var footer: some View {
-        Button {
-            bluetooth.startScanning()
-        } label: {
-            Label("Scan Again", systemImage: "arrow.clockwise")
-                .frame(maxWidth: .infinity)
+        VStack(spacing: 10) {
+            Button {
+                bluetooth.startScanning()
+            } label: {
+                Label("Scan Again", systemImage: "arrow.clockwise")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .disabled(!canScan)
+
+            Button {
+                session.enterDemo()
+            } label: {
+                Label("Demo ride (no sensor)", systemImage: "bicycle")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .tint(.purple)
+            Text("Plays a recorded 3-minute NYC bike ride through the full pipeline: live stream, road analysis, upload and map.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
         }
-        .buttonStyle(.bordered)
         .padding(.horizontal)
-        .disabled(!canScan)
     }
 
     private func deviceRow(_ device: DiscoveredDevice) -> some View {

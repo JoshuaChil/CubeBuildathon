@@ -31,7 +31,12 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--seed", type=int, default=0)
     s.add_argument("--odr", type=float, default=200.0, help="IMU output data rate, Hz")
     s.add_argument("--out", default="out/sim")
-    s.add_argument("--format", choices=["schema", "app"], default="schema", help="'app' = the Road Reader iPhone app's CSV")
+    s.add_argument(
+        "--format",
+        choices=["schema", "app", "demo"],
+        default="schema",
+        help="'app' = the Road Reader iPhone app's CSV; 'demo' = the app's bundled Demo ride (ESP32 lines + GPS)",
+    )
     s.add_argument("--firmware", choices=["200hz", "current"], default="200hz", help="for --format app: updated esp32.ino (200 Hz + t_ms) or the original 50 Hz one")
 
     rp = sub.add_parser("replay", help="stream an app-format CSV to listener.py like the phone does")
@@ -65,15 +70,25 @@ def main(argv: list[str] | None = None) -> None:
         names = list(SCENARIOS) if a.scenario == "all" else [a.scenario]
         for sc in names:
             for veh in _vehicles(a.vehicle):
-                if a.format == "app":
+                if a.format in ("app", "demo"):
                     import numpy as np
 
                     from .appio import write_app_csv
                     from .simulate import CURRENT_FIRMWARE_IMU, app_rows
 
                     res = run_scenario(sc, veh, seed=a.seed, cfg=SimConfig(imu=CURRENT_FIRMWARE_IMU))
-                    poll, ts = (50.0, False) if a.firmware == "current" else (200.0, True)
+                    poll, ts = (50.0, False) if a.firmware == "current" and a.format == "app" else (200.0, True)
                     rows = app_rows(res, np.random.default_rng(a.seed + 1), poll_hz=poll, device_timestamps=ts)
+                    if a.format == "demo":
+                        # What the ESP32 sends (t_ms,ax..gz) + the GPS fix the phone would have at that moment.
+                        path = Path(a.out) / "demo_ride.csv"
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        with path.open("w") as fh:
+                            fh.write("t_ms,ax,ay,az,gx,gy,gz,lat,lon,speed_mps\n")
+                            for r in rows:
+                                fh.write(",".join([r[8], *(f"{float(v):.4f}" for v in r[:3]), *(f"{float(v):.2f}" for v in r[3:6]), r[9], r[10], r[12]]) + "\n")
+                        print(f"{res.name}: {res.meta['duration_s']:.0f} s demo ride, {len(rows)} rows -> {path}")
+                        continue
                     path = Path(a.out) / f"session_{res.name}_{a.firmware}.csv"
                     write_app_csv(path, rows)
                     print(f"{res.name}: {res.meta['duration_s']:.0f} s, {len(rows)} app rows ({a.firmware} firmware) -> {path}")

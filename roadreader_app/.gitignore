@@ -10,5 +10,6 @@ build/
 
 # Listener output
 listener/*.csv
+listener/*.log
 __pycache__/
 listener/uploads/

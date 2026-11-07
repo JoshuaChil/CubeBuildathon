@@ -159,7 +159,23 @@ response includes a summary, which the Sessions list shows under each session (f
 
 The server also serves `GET /results/<device_id>/<session_name>` (JSON) and `/report/...` (PNG).
 
-**Demo without hardware:** simulate a ride in the app's format and stream it like the phone would:
+**Demo ride in the app (no sensor):** on the scan screen, tap **Demo ride (no sensor)**, then **Start Readings**.
+The app plays a recorded 3-minute NYC bike ride (`RoadReader/Resources/demo_ride.csv`, 200 Hz ESP32 lines with GPS)
+through exactly the same path as the sensor:
+- saved to a session CSV,
+- streamed to the computer,
+- live Road analysis card,
+- Detect Bump labels,
+- upload and the results map.
+
+Tested on an iPhone 16 Pro. Regenerate the file with
+`python -m roadimu simulate --scenario nyc_mixed --vehicle bike --format demo --out ../roadreader_app/RoadReader/Resources`
+(run from `software/roadimu`).
+
+Settings can also be passed as launch arguments, and they're saved: for example
+`xcrun devicectl device process launch --device <id> -- <bundle id> -forwardHost 10.0.0.5 -uploadURL http://10.0.0.5:8080/upload`.
+
+**Demo without the phone:** simulate a ride in the app's format and stream it like the phone would:
 
 ```
 cd ../software/roadimu

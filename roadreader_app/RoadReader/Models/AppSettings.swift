@@ -25,6 +25,11 @@ final class AppSettings: ObservableObject {
         static let liveAnalysisEnabled = "liveAnalysisEnabled"
         static let analysisPort = "analysisPort"
         static let vehicleType = "vehicleType"
+
+        static let persistable: Set<String> = [
+            forwardingEnabled, forwardHost, forwardPort, forwardProtocol, uploadURL,
+            liveAnalysisEnabled, analysisPort, vehicleType, deviceNamePrefix,
+        ]
     }
 
     static let nordicUARTService = "6E400001-B5A3-F393-E0A9-E50E24DC4CA1"
@@ -94,6 +99,18 @@ final class AppSettings: ObservableObject {
     }
 
     init() {
+        // Settings passed as launch arguments (e.g. `-forwardHost 10.0.0.5` from Xcode's scheme or
+        // `devicectl device process launch`) are saved, so the next normal launch keeps them.
+        let args = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
+        for (key, value) in args where Keys.persistable.contains(key) {
+            if let s = value as? String, let n = Int(s), [Keys.forwardPort, Keys.analysisPort].contains(key) {
+                defaults.set(n, forKey: key)
+            } else if let s = value as? String, ["YES", "NO", "true", "false"].contains(s) {
+                defaults.set(s == "YES" || s == "true", forKey: key)
+            } else {
+                defaults.set(value, forKey: key)
+            }
+        }
         if let id = defaults.string(forKey: Keys.deviceID) {
             deviceID = id
         } else {

@@ -8,7 +8,7 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
             Group {
-                if session.bluetooth.state.isConnected {
+                if session.bluetooth.state.isConnected || session.isDemo {
                     ReadingsView()
                 } else {
                     ScanView()
