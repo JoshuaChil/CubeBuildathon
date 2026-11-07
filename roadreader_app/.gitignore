@@ -1,0 +1,14 @@
+# Xcode
+xcuserdata/
+*.xcuserstate
+DerivedData/
+build/
+*.xcresult
+
+# macOS
+.DS_Store
+
+# Listener output
+listener/*.csv
+__pycache__/
+listener/uploads/
