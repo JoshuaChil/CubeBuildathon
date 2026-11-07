@@ -4,7 +4,12 @@
  * Advertises as "RoadReader" with the Nordic UART Service. Once the phone connects and taps
  * "Start Readings", every IMU sample is sent as one newline-terminated CSV line:
  *
- *     ax,ay,az,gx,gy,gz\n        accel in g, gyro in deg/s
+ *     t_ms,ax,ay,az,gx,gy,gz\n   ESP32 millis(), accel in g, gyro in deg/s
+ *
+ * Sampled at 200 Hz and packed up to 3 lines per BLE notification (the app splits on '\n').
+ * Why 200 Hz: a bike frame rings at ~28-40 Hz.  At 50 Hz that vibration aliases into fake
+ * road frequencies and the road-profile reconstruction falls apart (see software/roadimu).
+ * The timestamp lets the processing place every sample exactly, even if a packet is lost.
  *
  * The app appends the "Crack/Pothole Detected" label (column 7), GPS and timestamps itself.
  * The app writes "START" / "STOP" to the RX characteristic; both are honoured below.
@@ -29,7 +34,9 @@
 #define RX_UUID      "6E400002-B5A3-F393-E0A9-E50E24DC4CA1"   // phone -> ESP32 (START/STOP)
 #define TX_UUID      "6E400003-B5A3-F393-E0A9-E50E24DC4CA1"   // ESP32 -> phone (CSV rows)
 
-static const uint32_t SAMPLE_PERIOD_MS = 20;    // 50 Hz over BLE
+static const uint32_t SAMPLE_PERIOD_US = 5000;  // 200 Hz
+static const size_t   MAX_PAYLOAD      = 180;   // bytes per notification (MTU 185 - 3)
+static const int      LINES_PER_PACKET = 3;
 static const uint32_t SERIAL_PERIOD_MS = 500;   // debug print rate on the serial monitor
 static const uint32_t BLINK_PERIOD_MS  = 500;
 
@@ -39,10 +46,25 @@ BLECharacteristic* txChar = nullptr;
 volatile bool phoneConnected = false;
 volatile bool streaming = true;   // default on so the phone gets data even if START is missed
 
-unsigned long lastSample = 0;
+unsigned long nextSampleUs = 0;
 unsigned long lastSerial = 0;
 unsigned long lastBlink = 0;
 unsigned long rowsSent = 0;
+
+char batch[MAX_PAYLOAD + 1];
+size_t batchLen = 0;
+int batchLines = 0;
+
+void flushBatch()
+{
+    if (batchLen > 0 && phoneConnected && streaming && txChar)
+    {
+        txChar->setValue((uint8_t*)batch, batchLen);
+        txChar->notify();
+    }
+    batchLen = 0;
+    batchLines = 0;
+}
 
 class ServerCallbacks : public BLEServerCallbacks
 {
@@ -147,9 +169,13 @@ void loop()
         digitalWrite(LED, !digitalRead(LED));
     }
 
-    if (now - lastSample < SAMPLE_PERIOD_MS)
+    // Fixed-rate schedule on micros() so the rate doesn't drift; if we fall far behind, resync.
+    unsigned long nowUs = micros();
+    if ((long)(nowUs - nextSampleUs) < 0)
         return;
-    lastSample = now;
+    nextSampleUs += SAMPLE_PERIOD_US;
+    if ((long)(nowUs - nextSampleUs) > (long)(5 * SAMPLE_PERIOD_US))
+        nextSampleUs = nowUs + SAMPLE_PERIOD_US;
 
     IMU.getAGT();
     float ax = IMU.accX();
@@ -160,15 +186,24 @@ void loop()
     float gz = IMU.gyrZ();
 
     char line[96];
-    int len = snprintf(line, sizeof(line), "%.4f,%.4f,%.4f,%.2f,%.2f,%.2f\n", ax, ay, az, gx, gy, gz);
+    int len = snprintf(line, sizeof(line), "%lu,%.4f,%.4f,%.4f,%.2f,%.2f,%.2f\n", now, ax, ay, az, gx, gy, gz);
     if (len <= 0 || len >= (int)sizeof(line))
         return;
 
     if (phoneConnected && streaming && txChar)
     {
-        txChar->setValue((uint8_t*)line, len);
-        txChar->notify();
+        if (batchLen + len > MAX_PAYLOAD)
+            flushBatch();
+        memcpy(batch + batchLen, line, len);
+        batchLen += len;
         rowsSent++;
+        if (++batchLines >= LINES_PER_PACKET)
+            flushBatch();
+    }
+    else
+    {
+        batchLen = 0;
+        batchLines = 0;
     }
 
     if (now - lastSerial >= SERIAL_PERIOD_MS)

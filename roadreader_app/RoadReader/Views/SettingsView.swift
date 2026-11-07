@@ -41,6 +41,22 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    Picker("Vehicle", selection: $settings.vehicleType) {
+                        ForEach(VehicleType.allCases) { v in
+                            Text(v.label).tag(v)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    Toggle("Live analysis while riding", isOn: $settings.liveAnalysisEnabled)
+                    TextField("Analysis port", value: $settings.analysisPort, format: .number.grouping(.never))
+                        .keyboardType(.numberPad)
+                } header: {
+                    Text("Road analysis")
+                } footer: {
+                    Text("Run `python3 listener.py --analyze` on the forwarding host: it turns the stream into road roughness and potholes, and this app polls it on the analysis port. Uploaded sessions are analysed by upload_server.py; tap a session to see its map.")
+                }
+
+                Section {
                     HStack {
                         Text("Minimum mark duration")
                         Spacer()

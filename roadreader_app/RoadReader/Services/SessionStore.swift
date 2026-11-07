@@ -2,7 +2,7 @@ import Foundation
 import Combine
 
 /// Summary of one recorded CSV session on the device.
-struct SessionInfo: Identifiable, Equatable {
+struct SessionInfo: Identifiable, Hashable {
     let url: URL
     let name: String
     let bytes: Int
@@ -22,8 +22,23 @@ final class SessionStore: ObservableObject {
     @Published private(set) var isLoading = false
     @Published private(set) var uploading: Set<String> = []
     @Published var errorMessage: String?
+    /// Road analysis returned by the server for each uploaded session (by session name).
+    @Published private(set) var analyses: [String: UploadAnalysis] = SessionStore.loadAnalyses()
 
     private let uploadedKey = "uploadedSessionNames"
+    private static let analysesKey = "sessionAnalyses"
+
+    private static func loadAnalyses() -> [String: UploadAnalysis] {
+        guard let data = UserDefaults.standard.data(forKey: analysesKey) else { return [:] }
+        return (try? JSONDecoder().decode([String: UploadAnalysis].self, from: data)) ?? [:]
+    }
+
+    private func setAnalysis(_ analysis: UploadAnalysis?, for name: String) {
+        analyses[name] = analysis
+        if let data = try? JSONEncoder().encode(analyses) {
+            UserDefaults.standard.set(data, forKey: Self.analysesKey)
+        }
+    }
     private let uploader = SessionUploader()
     private var cache: [String: SessionInfo] = [:]
 
@@ -111,6 +126,7 @@ final class SessionStore: ObservableObject {
     func delete(_ info: SessionInfo) {
         DatasetRecorder.delete(info.url)
         markUploaded(info.name, false)
+        setAnalysis(nil, for: info.name)
         cache[info.name] = nil
         sessions.removeAll { $0.name == info.name }
     }
@@ -127,9 +143,11 @@ final class SessionStore: ObservableObject {
         uploading.insert(info.name)
         Task {
             do {
-                try await uploader.upload(info, to: endpoint, apiKey: settings.uploadAPIKey, deviceID: settings.deviceID)
+                let analysis = try await uploader.upload(info, to: endpoint, apiKey: settings.uploadAPIKey,
+                                                         deviceID: settings.deviceID, vehicle: settings.vehicleType)
                 await MainActor.run {
                     self.markUploaded(info.name, true)
+                    self.setAnalysis(analysis, for: info.name)
                     self.uploading.remove(info.name)
                 }
             } catch {

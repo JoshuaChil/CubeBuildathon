@@ -22,6 +22,9 @@ final class AppSettings: ObservableObject {
         static let uploadURL = "uploadURL"
         static let uploadAPIKey = "uploadAPIKey"
         static let deviceID = "deviceID"
+        static let liveAnalysisEnabled = "liveAnalysisEnabled"
+        static let analysisPort = "analysisPort"
+        static let vehicleType = "vehicleType"
     }
 
     static let nordicUARTService = "6E400001-B5A3-F393-E0A9-E50E24DC4CA1"
@@ -60,8 +63,35 @@ final class AppSettings: ObservableObject {
     @Published var uploadAPIKey: String {
         didSet { defaults.set(uploadAPIKey, forKey: Keys.uploadAPIKey) }
     }
+    /// Show live road analysis while recording (polls listener.py --analyze on the forwarding host).
+    @Published var liveAnalysisEnabled: Bool {
+        didSet { defaults.set(liveAnalysisEnabled, forKey: Keys.liveAnalysisEnabled) }
+    }
+    @Published var analysisPort: Int {
+        didSet { defaults.set(analysisPort, forKey: Keys.analysisPort) }
+    }
+    /// Which vehicle model the road analysis inverts (the box's mount differs a lot between them).
+    @Published var vehicleType: VehicleType {
+        didSet { defaults.set(vehicleType.rawValue, forKey: Keys.vehicleType) }
+    }
+
     /// Stable per-install identifier sent with uploads so sessions can be grouped by phone.
     let deviceID: String
+
+    /// Analysis endpoints next to the upload URL: .../upload -> .../results/<device>/<session> or .../report/...
+    func analysisURL(kind: String, session name: String) -> URL? {
+        guard var comps = URLComponents(string: uploadURL.trimmingCharacters(in: .whitespaces)),
+              comps.scheme?.hasPrefix("http") == true else { return nil }
+        var base = comps.percentEncodedPath
+        while base.hasSuffix("/") { base.removeLast() }
+        if base.hasSuffix("/upload") { base.removeLast("/upload".count) }
+        var allowed = CharacterSet.urlPathAllowed
+        allowed.remove("/")
+        let enc = { (s: String) in s.addingPercentEncoding(withAllowedCharacters: allowed) ?? s }
+        comps.percentEncodedPath = "\(base)/\(kind)/\(enc(deviceID))/\(enc(name))"
+        comps.query = nil
+        return comps.url
+    }
 
     init() {
         if let id = defaults.string(forKey: Keys.deviceID) {
@@ -80,5 +110,8 @@ final class AppSettings: ObservableObject {
         forwardPort = defaults.object(forKey: Keys.forwardPort) as? Int ?? 5005
         forwardProtocol = ForwardProtocol(rawValue: defaults.string(forKey: Keys.forwardProtocol) ?? "") ?? .udp
         minMarkDuration = defaults.object(forKey: Keys.minMarkDuration) as? Double ?? 0.5
+        liveAnalysisEnabled = defaults.object(forKey: Keys.liveAnalysisEnabled) as? Bool ?? true
+        analysisPort = defaults.object(forKey: Keys.analysisPort) as? Int ?? 8081
+        vehicleType = VehicleType(rawValue: defaults.string(forKey: Keys.vehicleType) ?? "") ?? .bike
     }
 }

@@ -23,7 +23,9 @@ struct SessionUploader {
         }
     }
 
-    func upload(_ info: SessionInfo, to endpoint: URL, apiKey: String, deviceID: String) async throws {
+    /// Returns the server's road analysis of the session, if it ran one (upload_server.py does).
+    @discardableResult
+    func upload(_ info: SessionInfo, to endpoint: URL, apiKey: String, deviceID: String, vehicle: VehicleType = .bike) async throws -> UploadAnalysis? {
         guard let csv = try? Data(contentsOf: info.url) else { throw UploadError.unreadableFile }
 
         let boundary = "RoadReader-\(UUID().uuidString)"
@@ -45,6 +47,7 @@ struct SessionUploader {
         field("rows", String(info.rows))
         field("flagged", String(info.flagged))
         field("duration_s", String(format: "%.1f", info.duration))
+        field("vehicle", vehicle.rawValue)
         if let start = info.startedAt {
             field("started_at", ISO8601DateFormatter().string(from: start))
         }
@@ -59,6 +62,8 @@ struct SessionUploader {
         guard (200..<300).contains(status) else {
             throw UploadError.server(status: status, body: String(data: data, encoding: .utf8) ?? "")
         }
+        struct Response: Decodable { let analysis: UploadAnalysis? }
+        return (try? RoadAnalysisJSON.decoder.decode(Response.self, from: data))?.analysis
     }
 }
 

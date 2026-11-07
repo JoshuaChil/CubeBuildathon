@@ -28,5 +28,6 @@ dist/
 
 # Large data
 data/raw/
+software/roadimu/out/
 *.mp4
 *.mov

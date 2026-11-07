@@ -44,12 +44,19 @@ While collecting training data, a rider presses a **button** on the box each tim
 
 The full design is in [docs/architecture.md](docs/architecture.md). The data format that every subteam builds against is in [docs/data-schema.md](docs/data-schema.md).
 
+## Try it
+
+- **Test the full system with the hardware:** follow [TESTING.md](TESTING.md). It covers flashing the ESP32,
+  installing the iPhone app, starting the analysis on a computer, a bench test and a real ride.
+- **No hardware:** run `./scripts/setup.sh && ./scripts/demo.sh`. This simulates a ride and runs the whole
+  computer side.
+
 ## Repo layout
 
 | Folder | Owner | What lives here |
 |---|---|---|
 | [`hardware/`](hardware/) | Hardware | ESP32 firmware, wiring/pinout, enclosure and mount CAD, bill of materials |
-| [`software/`](software/) | Software | Mobile app, backend/database, ML bump classifier, dashboard |
+| [`software/`](software/) | Software | IMU simulator + topography pipeline ([`roadimu`](software/roadimu/)), mobile app, backend/database, ML, dashboard |
 | [`pitch/`](pitch/) | Pitch prep | Problem research, slide deck, demo script, judging Q&A |
 | [`docs/`](docs/) | Everyone | Architecture, shared data schema, 24h timeline |
 | [`data/`](data/) | Software + Hardware | Sample recordings and labeled ride logs (small files only) |

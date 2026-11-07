@@ -11,6 +11,8 @@ final class SessionViewModel: ObservableObject {
     let location = LocationManager()
     let forwarder = StreamForwarder()
     let recorder = DatasetRecorder()
+    /// Live road analysis from the computer (listener.py --analyze).
+    let analysis = AnalysisClient()
 
     @Published private(set) var isReading = false
     /// True while rows should be labelled "Crack/Pothole Detected" = 1.
@@ -47,6 +49,7 @@ final class SessionViewModel: ObservableObject {
                           location.objectWillChange.eraseToAnyPublisher(),
                           forwarder.objectWillChange.eraseToAnyPublisher(),
                           recorder.objectWillChange.eraseToAnyPublisher(),
+                          analysis.objectWillChange.eraseToAnyPublisher(),
                           settings.objectWillChange.eraseToAnyPublisher()] {
             publisher
                 .receive(on: RunLoop.main)
@@ -79,6 +82,9 @@ final class SessionViewModel: ObservableObject {
         }
         if settings.forwardingEnabled {
             forwarder.start(host: settings.forwardHost, port: settings.forwardPort, proto: settings.forwardProtocol)
+            if settings.liveAnalysisEnabled {
+                analysis.start(host: settings.forwardHost, port: settings.analysisPort, vehicle: settings.vehicleType)
+            }
         }
         location.requestAuthorization()
         location.start()
@@ -104,6 +110,7 @@ final class SessionViewModel: ObservableObject {
         bluetooth.stopStreaming()
         recorder.endSession()
         forwarder.stop()
+        analysis.stop()
         cancelMark()
         isReading = false
         UIApplication.shared.isIdleTimerDisabled = false

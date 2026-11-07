@@ -23,6 +23,8 @@
 
 Decide and write down here: the accel range (e.g. ±16 g), the gyro range and the sample rate.
 
+> **Simulation suggests** ([software/roadimu](../software/roadimu/README.md#recommendations-for-the-hardware-team)): accel ±16 g (pothole hits reach 16 g on a rigid bike), gyro ±2000 dps, **200 Hz** with the IMU's UI low-pass at ODR/4. 500 Hz gave no improvement. Optional extra column worth adding: `alt_m` (phone barometric altitude), which would make the hill estimates much more accurate.
+
 ## 2. Session + readings (phone → backend)
 
 ```json

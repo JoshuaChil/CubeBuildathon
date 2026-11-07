@@ -10,6 +10,9 @@ struct ReadingsView: View {
 
             if session.isReading {
                 StatsRow()
+                if session.settings.forwardingEnabled && session.settings.liveAnalysisEnabled {
+                    RoadAnalysisCard()
+                }
                 LiveTable()
                 DetectBumpButton(isActive: session.isMarking,
                                  onPress: session.beginMark,

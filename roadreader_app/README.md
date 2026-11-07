@@ -2,12 +2,15 @@
 
 iPhone app (SwiftUI) that reads IMU rows from an ESP32 over Bluetooth LE, labels each row
 as a crack/pothole or not while you drive, tags it with the phone's GPS, saves the dataset on the
-phone, and streams it live to a computer on the same network.
+phone, and streams it live to a computer on the same network. The computer turns the stream into
+**road roughness and potholes** (see [Road analysis](#road-analysis)), and the app shows them live and on a map.
 
 ```
 ESP32 (ICM-42688) --BLE--> iPhone (Road Reader) --UDP/TCP over Wi-Fi--> computer (listener.py -> CSV)
-                              |  + GPS
-                              +-> Documents/RoadReader/session_*.csv  --Sessions > Upload--> web database
+                              |  + GPS        ^                            |  --analyze: software/roadimu
+                              |               +---- GET /live (every 2 s) -+  road condition, potholes
+                              +-> Documents/RoadReader/session_*.csv  --Sessions > Upload--> upload_server.py
+                                                    map + results <-- GET /results/... --+  (analyses every upload)
 ```
 
 ## Layout
@@ -120,14 +123,69 @@ curl http://localhost:8080/              # JSON list of stored sessions
 Plain `http://` works for local-network addresses (the app allows local networking in `Info.plist`). A hosted
 database must use `https://`.
 
+## Road analysis
+
+The road-topography pipeline in [`../software/roadimu`](../software/roadimu/README.md) runs on the computer and
+the app shows its results. Install its dependencies once:
+
+```
+pip install -r ../software/roadimu/requirements.txt
+```
+
+**While riding (live):**
+
+```
+cd listener
+python3 listener.py --analyze                # bike; add --vehicle car for a car
+```
+
+The listener still writes the CSV as before, and also re-analyses the ride every few seconds. It serves the
+result on `http://<computer>:8081/live`. In the app, *Settings → Road analysis* sets the vehicle, the live toggle
+and the port (default 8081; the host is the forwarding host). While recording, a **Road analysis** card under the
+stats shows:
+- the current road condition (good / fair / poor / very poor, from IRI per 20 m),
+- potholes and bumps found so far,
+- the distance ridden and the last detected event.
+
+Stand still for ~2 s after tapping Start Readings, because that's when the box's mounting is calibrated.
+
+**After the ride:** `upload_server.py` now analyses every upload (if numpy/scipy are installed). The upload
+response includes a summary, which the Sessions list shows under each session (for example "Poor · IRI 5.2 ·
+3 potholes · 0.9 km"). Tap a session to see:
+- a **map** of the route coloured by condition,
+- pothole/bump pins,
+- the list of events,
+- the full report figure.
+
+The server also serves `GET /results/<device_id>/<session_name>` (JSON) and `/report/...` (PNG).
+
+**Demo without hardware:** simulate a ride in the app's format and stream it like the phone would:
+
+```
+cd ../software/roadimu
+python -m roadimu simulate --scenario nyc_mixed --vehicle bike --format app --out out/app
+python -m roadimu replay out/app/session_nyc_mixed_bike_200hz.csv --speedup 4   # to listener.py on this computer
+```
+
+You can also copy the CSV into the app's Documents/RoadReader folder (Files app) and upload it from Sessions.
+
 ## ESP32
 
 The firmware lives in `../roadreader_code /esp32/esp32.ino` (ICM-42688 on SPI, CS on GPIO 5, LED on GPIO 2).
 Flash it with the Arduino IDE (ESP32 board package plus the `ICM42688` library). It advertises as `RoadReader`
-with the Nordic UART Service, streams `ax,ay,az,gx,gy,gz` at 50 Hz once the phone subscribes, honours
-`START`/`STOP`, and shows a blinking LED while advertising and a solid LED while the phone is connected.
-Change `SAMPLE_PERIOD_MS` for a different rate. Any other firmware works as long as it notifies newline-terminated
-CSV lines on a characteristic; set the service UUID in the app's Settings if it is not the Nordic UART Service.
+with the Nordic UART Service, and honours `START`/`STOP`. The LED blinks while advertising and stays solid while
+the phone is connected. Once the phone subscribes, it streams `t_ms,ax,ay,az,gx,gy,gz`:
+- at **200 Hz**,
+- with up to 3 lines per notification,
+- timed with `micros()`, so the rate doesn't drift.
+
+**Why 200 Hz and `t_ms`** (changed from the original 50 Hz). A bike frame vibrates at about 28–40 Hz. At 50 Hz
+that vibration aliases into fake road frequencies. In simulation, the bike road profile dropped from a
+correlation of 0.86 (200 Hz) to 0.13 (50 Hz), with about 60 false potholes per 4 rides. Cars were fine at 50 Hz.
+The `t_ms` timestamp lets the analysis place every sample exactly, even when a Bluetooth packet is lost.
+
+Any other firmware works as long as it notifies newline-terminated CSV lines on a characteristic; set the service
+UUID in the app's Settings if it is not the Nordic UART Service.
 
 ## Troubleshooting
 

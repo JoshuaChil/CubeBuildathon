@@ -6,11 +6,16 @@
 
 ```
 software/
+├── roadimu/      IMU simulator + signal processing: IMU CSV -> road profile, hills, IRI, potholes
 ├── mobile-app/   Phone app: BLE connection, sessions, GPS, upload
 ├── backend/      Database + API (sessions, readings, events)
 ├── ml/           Bump/roughness classifier: notebooks, training scripts, models
 └── dashboard/    Web map + repair priority list
 ```
+
+**Start here:** [roadimu/](roadimu/) simulates realistic IMU data for 8 road conditions (bike and car) and turns
+any IMU CSV into topography and a pothole list, all scored against ground truth. The app, backend and
+dashboard can use its simulated CSVs and outputs (`*_segments.csv`, `*_events.csv`) before the hardware is ready.
 
 ## Task checklist
 
@@ -28,6 +33,8 @@ software/
 
 **ML** ([ml/](ml/))
 - [ ] Export labeled sessions to CSV → `data/labeled/`
+- [x] Simulated training data with ground truth: `python -m roadimu simulate --scenario all --vehicle both`
+- [x] Physics-based detector to compare against: `roadimu.topo` (model-based profile + IRI + events)
 - [ ] Baseline: a threshold on vertical-acceleration spikes
 - [ ] Features per window (RMS, peak, std, frequency bands) → simple classifier
 - [ ] Evaluate on a held-out ride; report precision/recall for the pitch

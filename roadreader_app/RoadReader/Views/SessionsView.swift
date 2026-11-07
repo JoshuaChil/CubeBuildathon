@@ -24,10 +24,13 @@ struct SessionsView: View {
                         summarySection
                         Section("On this device") {
                             ForEach(store.sessions) { info in
-                                SessionRow(info: info,
-                                           isUploading: store.uploading.contains(info.name),
-                                           canUpload: hasEndpoint,
-                                           onUpload: { store.upload(info, settings: settings) })
+                                NavigationLink(value: info) {
+                                    SessionRow(info: info,
+                                               analysis: store.analyses[info.name],
+                                               isUploading: store.uploading.contains(info.name),
+                                               canUpload: hasEndpoint,
+                                               onUpload: { store.upload(info, settings: settings) })
+                                }
                                 .swipeActions(edge: .trailing) {
                                     Button(role: .destructive) { pendingDelete = info } label: {
                                         Label("Delete", systemImage: "trash")
@@ -49,6 +52,9 @@ struct SessionsView: View {
                         }
                     }
                     .refreshable { store.reload() }
+                    .navigationDestination(for: SessionInfo.self) { info in
+                        SessionResultsView(info: info, analysis: store.analyses[info.name])
+                    }
                 }
             }
             .navigationTitle("Sessions")
@@ -123,6 +129,7 @@ struct SessionsView: View {
 
 private struct SessionRow: View {
     let info: SessionInfo
+    let analysis: UploadAnalysis?
     let isUploading: Bool
     let canUpload: Bool
     let onUpload: () -> Void
@@ -134,6 +141,9 @@ private struct SessionRow: View {
                 Text(statsLine)
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
+                if let a = analysis {
+                    analysisLine(a)
+                }
                 Text(info.name)
                     .font(.caption2.monospaced())
                     .foregroundStyle(.tertiary)
@@ -160,7 +170,7 @@ private struct SessionRow: View {
                 Label("Upload", systemImage: "icloud.and.arrow.up")
                     .font(.caption.weight(.semibold))
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.bordered) // non-plain style keeps it tappable on its own inside the NavigationLink row
             .controlSize(.small)
             .disabled(!canUpload)
         }
@@ -168,6 +178,22 @@ private struct SessionRow: View {
 
     private var title: String {
         (info.startedAt ?? info.modified).formatted(date: .abbreviated, time: .shortened)
+    }
+
+    @ViewBuilder
+    private func analysisLine(_ a: UploadAnalysis) -> some View {
+        if a.ok {
+            HStack(spacing: 4) {
+                Circle().fill(RoadCondition.color(a.condition)).frame(width: 8, height: 8)
+                Text("\(RoadCondition.title(a.condition)) · IRI \(a.meanIriMPerKm.map { String(format: "%.1f", $0) } ?? "–") · \(a.potholes ?? 0) potholes · \(String(format: "%.2f km", (a.distanceM ?? 0) / 1000))")
+                    .font(.caption.weight(.medium))
+            }
+        } else {
+            Text("Analysis failed: \(a.error ?? "unknown")")
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .lineLimit(1)
+        }
     }
 
     private var statsLine: String {
