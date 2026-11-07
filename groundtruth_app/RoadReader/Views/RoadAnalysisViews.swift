@@ -150,7 +150,7 @@ struct SessionResultsView: View {
                 }
             } else if loading {
                 ProgressView("Loading analysis…")
-            } else if !info.isUploaded {
+            } else if !info.uploadedToServer {
                 ContentUnavailableView("Not analysed yet", systemImage: "icloud.and.arrow.up",
                                        description: Text("Upload this session; the server analyses it and the results appear here."))
             } else {
@@ -165,7 +165,7 @@ struct SessionResultsView: View {
     }
 
     private func load() async {
-        guard info.isUploaded, let url = settings.analysisURL(kind: "results", session: info.name) else { return }
+        guard info.uploadedToServer, let url = settings.analysisURL(kind: "results", session: info.name) else { return }
         loading = true
         defer { loading = false }
         do {

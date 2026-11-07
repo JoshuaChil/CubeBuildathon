@@ -44,7 +44,7 @@ If this fails, the problem is on the computer, not the hardware.
 
 ## 3. Flash the ESP32 (10 min)
 
-1. Plug the ESP32 into the computer and open `roadreader_code /esp32/esp32.ino` in the Arduino IDE. Note the
+1. Plug the ESP32 into the computer and open `groundtruth_code/esp32/esp32.ino` in the Arduino IDE. Note the
    **space** at the end of the folder name.
 2. Choose your ESP32 board and port, then click **Upload**.
 3. Open the **Serial Monitor** at **115200** baud.
@@ -61,7 +61,7 @@ If you see `IMU initialization failed`, check the SPI wiring (CS = GPIO 5).
 
 ## 4. Install the app on the iPhone (10 min)
 
-1. Run `open roadreader_app/RoadReader.xcodeproj`.
+1. Run `open groundtruth_app/RoadReader.xcodeproj`.
 2. Select the **RoadReader** target, go to **Signing & Capabilities**, and choose your **Team** (sign in with your
    Apple ID if asked). If Xcode says the bundle identifier is taken, change it (e.g. add your initials).
 3. Plug in the iPhone, pick it as the run destination, and press **Run** (▶).
@@ -127,8 +127,8 @@ The most useful thing you can send is the raw ride CSV. With it, the software te
 signals to the simulation and tune the model to your bike and mount. Any of these work:
 - **From the phone:** in *Sessions*, long-press a ride and choose **Share CSV** (AirDrop/Files).
 - **On the computer:** files are written to:
-  - `roadreader_app/listener/roadreader_<time>.csv` (the live stream),
-  - `roadreader_app/listener/uploads/<device>/session_*.csv`, plus `*.analysis.json` and `*.report.png`.
+  - `groundtruth_app/listener/roadreader_<time>.csv` (the live stream),
+  - `groundtruth_app/listener/uploads/<device>/session_*.csv`, plus `*.analysis.json` and `*.report.png`.
 
 Put them in the team drive and link them in [`data/README.md`](data/README.md). Small rides (< 10 MB) can also be
 committed under `data/sample/`. With each file, note the vehicle and mount, the route, and any known bumps.
@@ -136,7 +136,7 @@ committed under `data/sample/`. With each file, note the vehicle and mount, the 
 To re-run the analysis on any saved ride (it writes CSVs and a report PNG to `out/real/`):
 
 ```bash
-cd software/roadimu && ../../.venv/bin/python -m roadimu reconstruct ../../roadreader_app/listener/roadreader_<time>.csv --vehicle bike --out out/real
+cd software/roadimu && ../../.venv/bin/python -m roadimu reconstruct ../../groundtruth_app/listener/roadreader_<time>.csv --vehicle bike --out out/real
 ```
 
 ## Troubleshooting
@@ -151,5 +151,5 @@ cd software/roadimu && ../../.venv/bin/python -m roadimu reconstruct ../../roadr
 | Note: "Sample rate is 50 Hz" (bike) | The old firmware is still flashed. Redo step 3. |
 | `setup.sh`: Python too old | Install Python 3.10+ (e.g. `brew install python`) and run `PYTHON=python3.12 ./scripts/setup.sh`. |
 
-For more detail: [roadreader_app/README.md](roadreader_app/README.md) covers the app and servers, and
+For more detail: [groundtruth_app/README.md](groundtruth_app/README.md) covers the app and servers, and
 [software/roadimu/README.md](software/roadimu/README.md) covers how the analysis works and its accuracy.

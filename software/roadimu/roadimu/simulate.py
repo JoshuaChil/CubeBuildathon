@@ -57,7 +57,7 @@ class SimResult:
     raw: dict = field(default_factory=dict)  # full-rate IMU output, GPS fixes, button presses
 
 
-# The ESP32 firmware in "roadreader_code /esp32/esp32.ino" as pushed: the ICM-42688 runs at its
+# The ESP32 firmware in "groundtruth_code/esp32/esp32.ino" as pushed: the ICM-42688 runs at its
 # library default (1 kHz, UI filter ~ODR/4) and loop() polls the latest value every 20 ms.
 CURRENT_FIRMWARE_IMU = ImuSpec(odr_hz=1000.0, filter_bw_fraction=0.25)
 

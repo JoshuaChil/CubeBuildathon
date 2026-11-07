@@ -17,9 +17,9 @@ echo "1/4 Simulating a 0.9 km NYC bike ride in the app's CSV format..."
 CSV="$TMP/session_nyc_mixed_bike_200hz.csv"
 
 echo "2/4 Starting listener.py --analyze and upload_server.py..."
-(cd "$ROOT/roadreader_app/listener" && exec "$PY" listener.py --analyze --out "$TMP/live.csv" >"$TMP/listener.log" 2>&1) &
+(cd "$ROOT/groundtruth_app/listener" && exec "$PY" listener.py --analyze --out "$TMP/live.csv" >"$TMP/listener.log" 2>&1) &
 LISTEN_PID=$!
-(cd "$ROOT/roadreader_app/listener" && exec "$PY" upload_server.py --dir "$TMP/uploads" >"$TMP/upload.log" 2>&1) &
+(cd "$ROOT/groundtruth_app/listener" && exec "$PY" upload_server.py --dir "$TMP/uploads" >"$TMP/upload.log" 2>&1) &
 UPLOAD_PID=$!
 sleep 2
 

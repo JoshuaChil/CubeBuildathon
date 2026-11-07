@@ -20,18 +20,21 @@ ESP32 (ICM-42688) --BLE--> iPhone (Road Reader) --UDP/TCP over Wi-Fi--> computer
 | `RoadReader.xcodeproj` | Xcode 16 project (folder-synced: any file you add under `RoadReader/` is picked up automatically) |
 | `RoadReader/RoadReaderApp.swift` | App entry point |
 | `RoadReader/Models/IMUSample.swift` | Row model, line parser, CSV formatting (the single source of truth for columns) |
-| `RoadReader/Models/AppSettings.swift` | Persisted settings (device name, host/port, protocol, tap duration) |
+| `RoadReader/Models/AppSettings.swift` | Persisted settings (device name, host/port, protocol, tap duration, Supabase, upload server) |
+| `RoadReader/Config/SupabaseConfig.swift` | **Put your Supabase URL and anon key here** |
 | `RoadReader/Services/BluetoothManager.swift` | Scan on launch, auto-connect, reconnect, newline framing |
 | `RoadReader/Services/LocationManager.swift` | GPS fixes for geotagging |
 | `RoadReader/Services/StreamForwarder.swift` | UDP/TCP sender (Network framework) with auto-retry |
 | `RoadReader/Services/DatasetRecorder.swift` | Buffered CSV writer in Documents |
 | `RoadReader/ViewModels/SessionViewModel.swift` | Wires it all together; hold/tap labelling logic; 10 Hz UI refresh |
 | `RoadReader/Services/SessionStore.swift` | Lists saved sessions, computes rows/flagged/duration, tracks what has been uploaded |
-| `RoadReader/Services/SessionUploader.swift` | Multipart POST of a session CSV to the web database |
+| `RoadReader/Services/SupabaseUploader.swift` | Inserts a session into Supabase, one row per reading (PostgREST, no SDK) |
+| `RoadReader/Services/SessionUploader.swift` | Multipart POST of a session CSV to the optional upload/analysis server |
+| `supabase/schema.sql` | SQL for the Supabase `readings` table and its row-level-security policies |
 | `RoadReader/Views/` | `ScanView` → `ReadingsView` (Start Readings, live table, Detect Bump), `SettingsView`, `SessionsView` |
 | `listener/listener.py` | Computer-side live receiver, writes CSV. Standard library only. |
 | `listener/upload_server.py` | Stand-in web database: accepts session uploads and stores them. Standard library only. |
-| `../roadreader_code /esp32/esp32.ino` | The ESP32 firmware (ICM-42688 over SPI, BLE Nordic UART Service at 50 Hz) |
+| `../groundtruth_code/esp32/esp32.ino` | The ESP32 firmware (ICM-42688 over SPI, BLE Nordic UART Service at 50 Hz) |
 
 ## App flow
 
@@ -98,9 +101,55 @@ It prints the computer's LAN IP; enter it in the app under *Settings → Forward
 port and protocol. Phone and computer must be on the same Wi-Fi, or run the listener on a laptop joined to the
 phone's Personal Hotspot (then the host is usually `172.20.10.1`-ish, shown by the script).
 
-## Upload sessions to the web database
+## Upload sessions to Supabase
 
-The app POSTs each session as `multipart/form-data` to the URL set in *Settings → Web database*:
+1. In the Supabase dashboard open *SQL editor* and run [`supabase/schema.sql`](supabase/schema.sql). It creates the
+   `readings` table and lets the anon key insert rows (and read `session_number` so numbering continues).
+2. Open *Project Settings → API* and copy the **Project URL** and the **anon public** key into
+   [`RoadReader/Config/SupabaseConfig.swift`](RoadReader/Config/SupabaseConfig.swift). Rebuild. (Or type them into
+   *Settings → Supabase* on the phone; the phone's values override the file.) Never use the `service_role` key.
+3. *Sessions → Upload* (or *Upload All*). Each CSV becomes one table row per reading:
+
+| Table column | From |
+| --- | --- |
+| `session_date` | The phone's local date of the first row |
+| `session_number` | 1 + the highest number already in the table for that date (checked via `GET ...?select=session_number`) |
+| `recorded_at` | `phone_time_ms` as a UTC timestamp |
+| `ax, ay, az, gx, gy, gz` | As recorded |
+| `latitude, longitude` | GPS, `NULL` for rows before the first fix |
+| `anomaly_detected` | `crack_pothole_detected` (1 while Detect Bump was held) |
+
+Rows are inserted in chunks of 1000 with `POST https://<project>.supabase.co/rest/v1/readings` and the headers
+`apikey` / `Authorization: Bearer <anon key>` (see `SupabaseUploader.swift`). The row shows a progress ring while
+inserting, then "Supabase <date> · session N". A session that failed half-way is retried from the start on the next
+Upload (delete the partial rows in Supabase first, or they will carry a different session number).
+
+## Live Broadcasting (real-time into Supabase)
+
+Turn on **Live Broadcasting** on the Ready screen (or Settings → Supabase). The Start button becomes
+**Start Live Session** and the app streams every reading into the Supabase `readings` table while you ride:
+
+- On start it reserves the next `session_number` for today's `session_date`, retrying until Supabase answers.
+- Rows are queued as they arrive (200 Hz) and inserted in batches about once a second, up to 1000 rows per
+  request. The LIVE bar shows rows in Supabase, rows queued, and any reconnect errors.
+- If the connection drops, batches are retried with backoff and nothing is lost unless the phone is offline
+  for roughly five minutes (60,000 rows), after which the oldest rows are dropped and counted.
+- On Stop the remaining rows are drained. If every row arrived, the session is marked as uploaded in the
+  Sessions list; otherwise an alert says how many rows were missed and you can Upload the CSV in full later
+  (that creates a new session number).
+- The local CSV and the computer stream keep working exactly as before. Live Broadcasting is additive.
+
+For a dashboard that follows the ride, run the Realtime block at the end of `supabase/schema.sql` once, then
+subscribe to `INSERT` on `public.readings`, or poll the `public.live_session` view (today's latest session).
+Two phones broadcasting on the same day could pick the same session number; add `device_id` to the table if
+that matters for your demo.
+
+## Upload sessions to the optional upload/analysis server
+
+If an upload URL is also set in *Settings → Upload server*, Upload sends the CSV there too (used for the road analysis).
+Both destinations are tracked separately; the green check appears when every configured destination has the session.
+
+The app POSTs each session as `multipart/form-data` to the URL set in *Settings → Upload server*:
 
 | Part | Content |
 | --- | --- |
@@ -169,7 +218,7 @@ through exactly the same path as the sensor:
 - upload and the results map.
 
 Tested on an iPhone 16 Pro. Regenerate the file with
-`python -m roadimu simulate --scenario nyc_mixed --vehicle bike --format demo --out ../roadreader_app/RoadReader/Resources`
+`python -m roadimu simulate --scenario nyc_mixed --vehicle bike --format demo --out ../groundtruth_app/RoadReader/Resources`
 (run from `software/roadimu`).
 
 Settings can also be passed as launch arguments, and they're saved: for example
@@ -187,7 +236,7 @@ You can also copy the CSV into the app's Documents/RoadReader folder (Files app)
 
 ## ESP32
 
-The firmware lives in `../roadreader_code /esp32/esp32.ino` (ICM-42688 on SPI, CS on GPIO 5, LED on GPIO 2).
+The firmware lives in `../groundtruth_code/esp32/esp32.ino` (ICM-42688 on SPI, CS on GPIO 5, LED on GPIO 2).
 Flash it with the Arduino IDE (ESP32 board package plus the `ICM42688` library). It advertises as `RoadReader`
 with the Nordic UART Service, and honours `START`/`STOP`. The LED blinks while advertising and stays solid while
 the phone is connected. Once the phone subscribes, it streams `t_ms,ax,ay,az,gx,gy,gz`:

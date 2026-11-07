@@ -10,6 +10,9 @@ struct ReadingsView: View {
 
             if session.isReading {
                 StatsRow()
+                if session.broadcaster.status != .off {
+                    LiveBroadcastBar()
+                }
                 if session.settings.forwardingEnabled && session.settings.liveAnalysisEnabled {
                     RoadAnalysisCard()
                 }
@@ -33,24 +36,55 @@ struct ReadingsView: View {
                         .foregroundStyle(.tint)
                     Text("Ready to record")
                         .font(.title3.weight(.semibold))
-                    Text("Readings are saved to a CSV on this phone and streamed to \(session.settings.forwardingEnabled ? "\(session.settings.forwardHost):\(session.settings.forwardPort)" : "nowhere (forwarding off)").")
+                    Text(readyDescription)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 24)
                 }
                 Spacer()
+
+                if session.settings.supabaseCredentials != nil {
+                    Toggle(isOn: Binding(
+                        get: { session.settings.liveBroadcastEnabled },
+                        set: { session.settings.liveBroadcastEnabled = $0 }
+                    )) {
+                        Label {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Live Broadcasting").font(.body.weight(.medium))
+                                Text("Stream rows to Supabase in real time while recording")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } icon: {
+                            Image(systemName: "dot.radiowaves.left.and.right")
+                                .foregroundStyle(session.settings.liveBroadcastEnabled ? .red : .secondary)
+                        }
+                    }
+                    .tint(.red)
+                    .padding(12)
+                    .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+                }
+
                 Button {
                     session.startReadings()
                 } label: {
-                    Label("Start Readings", systemImage: "play.fill")
+                    Label(session.settings.canBroadcastLive ? "Start Live Session" : "Start Readings",
+                          systemImage: session.settings.canBroadcastLive ? "dot.radiowaves.left.and.right" : "play.fill")
                         .font(.title3.weight(.semibold))
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 6)
                 }
                 .buttonStyle(.borderedProminent)
+                .tint(session.settings.canBroadcastLive ? .red : .accentColor)
                 .controlSize(.large)
-                .disabled(!session.isDemo && !session.bluetooth.canStream)
+                .disabled((!session.isDemo && !session.bluetooth.canStream) || !session.canStartReadings)
+
+                if session.broadcaster.status == .draining {
+                    Text("Finishing the previous live session…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
 
                 if !session.isDemo && !session.bluetooth.canStream {
                     Text("Waiting for the device to expose a data characteristic…")
@@ -74,6 +108,73 @@ struct ReadingsView: View {
             }
         }
         .padding()
+    }
+
+    private var readyDescription: String {
+        var parts = ["Readings are saved to a CSV on this phone"]
+        if session.settings.forwardingEnabled {
+            parts.append("streamed to \(session.settings.forwardHost):\(session.settings.forwardPort)")
+        }
+        if session.settings.canBroadcastLive {
+            parts.append("broadcast live to Supabase")
+        }
+        return parts.joined(separator: ", ") + "."
+    }
+}
+
+// MARK: - Live broadcast bar
+
+private struct LiveBroadcastBar: View {
+    @EnvironmentObject private var session: SessionViewModel
+    @State private var pulse = false
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Circle()
+                .fill(color)
+                .frame(width: 10, height: 10)
+                .opacity(pulse && session.broadcaster.status == .live ? 0.25 : 1)
+                .animation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true), value: pulse)
+                .onAppear { pulse = true }
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(session.broadcaster.status.title)
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(color)
+                    if session.broadcaster.sessionNumber > 0 {
+                        Text("Session \(session.broadcaster.sessionDate) #\(session.broadcaster.sessionNumber)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Text(detail)
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            Spacer()
+            Image(systemName: "dot.radiowaves.left.and.right")
+                .foregroundStyle(color)
+        }
+        .padding(10)
+        .background(color.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var color: Color {
+        switch session.broadcaster.status {
+        case .live: return .red
+        case .retrying: return .orange
+        case .off: return .gray
+        case .starting, .draining: return .blue
+        }
+    }
+
+    private var detail: String {
+        var parts = ["\(session.broadcastSent.formatted()) rows in Supabase"]
+        if session.broadcastPending > 0 { parts.append("\(session.broadcastPending.formatted()) queued") }
+        if session.broadcastDropped > 0 { parts.append("\(session.broadcastDropped.formatted()) dropped") }
+        if case .retrying(let message) = session.broadcaster.status { parts.append(message) }
+        return parts.joined(separator: " · ")
     }
 }
 

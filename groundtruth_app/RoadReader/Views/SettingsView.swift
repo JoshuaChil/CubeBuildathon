@@ -72,6 +72,32 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    TextField("Project URL (https://xxxx.supabase.co)", text: $settings.supabaseURL)
+                        .keyboardType(.URL)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                    SecureField("anon public API key", text: $settings.supabaseKey)
+                    TextField("Table", text: $settings.supabaseTable)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                    Toggle("Live Broadcasting while recording", isOn: $settings.liveBroadcastEnabled)
+                        .disabled(settings.supabaseCredentials == nil)
+                    if settings.supabaseCredentials != nil {
+                        Label("Ready: uploads go to \(settings.supabaseTable)", systemImage: "checkmark.circle.fill")
+                            .font(.footnote)
+                            .foregroundStyle(.green)
+                    } else {
+                        Label("Not configured: fill in Config/SupabaseConfig.swift or the fields above", systemImage: "exclamationmark.triangle")
+                            .font(.footnote)
+                            .foregroundStyle(.orange)
+                    }
+                } header: {
+                    Text("Supabase")
+                } footer: {
+                    Text("Sessions > Upload inserts one row per reading: session_date, session_number, recorded_at, ax–gz, latitude, longitude, anomaly_detected. Create the table with supabase/schema.sql. The anon key is from Project Settings > API.\n\nLive Broadcasting inserts the same rows about once a second while you record, so a dashboard can follow the ride in real time (enable Realtime on the table with the block at the end of schema.sql). Rows are queued and retried if the connection drops; the Sessions list marks a live session as uploaded only if every row arrived.")
+                }
+
+                Section {
                     TextField("Upload URL (https://…/upload)", text: $settings.uploadURL)
                         .keyboardType(.URL)
                         .autocorrectionDisabled()
@@ -85,9 +111,9 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                     }
                 } header: {
-                    Text("Web database")
+                    Text("Upload server (optional)")
                 } footer: {
-                    Text("Sessions are uploaded as a multipart POST with the CSV in a \"file\" field plus session_name, device_id, rows, flagged, duration_s and started_at. The API key is sent as a Bearer token. Test locally with listener/upload_server.py.")
+                    Text("Leave blank to upload to Supabase only. Sessions are uploaded as a multipart POST with the CSV in a \"file\" field plus session_name, device_id, rows, flagged, duration_s and started_at. The API key is sent as a Bearer token. Test locally with listener/upload_server.py.")
                 }
 
                 Section("Dataset columns") {

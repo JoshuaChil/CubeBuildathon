@@ -7,8 +7,8 @@
 #   ./scripts/start_servers.sh --vehicle car
 #   ./scripts/start_servers.sh --protocol tcp  # any other listener.py options pass through
 #
-# Ctrl-C stops both.  Recorded rides: roadreader_app/listener/roadreader_*.csv
-# Uploaded sessions + analysis: roadreader_app/listener/uploads/<device_id>/
+# Ctrl-C stops both.  Recorded rides: groundtruth_app/listener/roadreader_*.csv
+# Uploaded sessions + analysis: groundtruth_app/listener/uploads/<device_id>/
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PY="$ROOT/.venv/bin/python"
@@ -22,7 +22,7 @@ if lsof -ti ":$UPLOAD_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
   echo "      If uploads fail, rerun with UPLOAD_PORT=9090 ./scripts/start_servers.sh"
 fi
 
-cd "$ROOT/roadreader_app/listener"
+cd "$ROOT/groundtruth_app/listener"
 "$PY" upload_server.py --port "$UPLOAD_PORT" > upload_server.log 2>&1 &
 UPLOAD_PID=$!
 trap 'kill $UPLOAD_PID 2>/dev/null || true' EXIT INT TERM
@@ -36,7 +36,7 @@ cat <<EOF
    Web database: Upload URL = http://$IP:$UPLOAD_PORT/upload
  Phone and computer must be on the same Wi-Fi (or the computer on the phone's hotspot).
  macOS: click "Allow" if asked whether Python may accept incoming connections.
- Upload server log: roadreader_app/listener/upload_server.log
+ Upload server log: groundtruth_app/listener/upload_server.log
 =====================================================================
 
 EOF

@@ -1,4 +1,4 @@
-"""Read/write the Road Reader iPhone app's CSV (roadreader_app/RoadReader/Models/IMUSample.swift).
+"""Read/write the Road Reader iPhone app's CSV (groundtruth_app/RoadReader/Models/IMUSample.swift).
 
 Columns:
     ax,ay,az,gx,gy,gz,crack_pothole_detected,phone_time_ms,device_time_ms,

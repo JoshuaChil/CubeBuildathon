@@ -117,7 +117,7 @@ These come from the simulation:
 
 ## Using it with the Road Reader app
 
-The iPhone app ([`roadreader_app`](../../roadreader_app/README.md)) streams to `listener.py`, which runs this
+The iPhone app ([`groundtruth_app`](../../groundtruth_app/README.md)) streams to `listener.py`, which runs this
 pipeline live with `--analyze`. `upload_server.py` runs it on every uploaded session. The app shows the results
 live and on a map. Parts of the package involved:
 - **`appio.py`:** reads the app's CSV (`phone_time_ms`, optional `device_time_ms`, GPS columns that are blank until

@@ -21,14 +21,19 @@ final class AppSettings: ObservableObject {
         static let minMarkDuration = "minMarkDuration"
         static let uploadURL = "uploadURL"
         static let uploadAPIKey = "uploadAPIKey"
+        static let supabaseURL = "supabaseURL"
+        static let supabaseKey = "supabaseKey"
+        static let supabaseTable = "supabaseTable"
         static let deviceID = "deviceID"
         static let liveAnalysisEnabled = "liveAnalysisEnabled"
         static let analysisPort = "analysisPort"
         static let vehicleType = "vehicleType"
+        static let liveBroadcastEnabled = "liveBroadcastEnabled"
 
         static let persistable: Set<String> = [
             forwardingEnabled, forwardHost, forwardPort, forwardProtocol, uploadURL,
             liveAnalysisEnabled, analysisPort, vehicleType, deviceNamePrefix,
+            supabaseURL, supabaseKey, supabaseTable, liveBroadcastEnabled,
         ]
     }
 
@@ -68,6 +73,25 @@ final class AppSettings: ObservableObject {
     @Published var uploadAPIKey: String {
         didSet { defaults.set(uploadAPIKey, forKey: Keys.uploadAPIKey) }
     }
+
+    /// Supabase project (see Config/SupabaseConfig.swift for the defaults and SupabaseUploader for the requests).
+    @Published var supabaseURL: String {
+        didSet { defaults.set(supabaseURL, forKey: Keys.supabaseURL) }
+    }
+    @Published var supabaseKey: String {
+        didSet { defaults.set(supabaseKey, forKey: Keys.supabaseKey) }
+    }
+    @Published var supabaseTable: String {
+        didSet { defaults.set(supabaseTable, forKey: Keys.supabaseTable) }
+    }
+    var supabaseCredentials: SupabaseUploader.Credentials? {
+        SupabaseUploader.Credentials(url: supabaseURL, anonKey: supabaseKey, table: supabaseTable)
+    }
+    /// Live Broadcasting: stream rows into the Supabase table while recording (needs supabaseCredentials).
+    @Published var liveBroadcastEnabled: Bool {
+        didSet { defaults.set(liveBroadcastEnabled, forKey: Keys.liveBroadcastEnabled) }
+    }
+    var canBroadcastLive: Bool { liveBroadcastEnabled && supabaseCredentials != nil }
     /// Show live road analysis while recording (polls listener.py --analyze on the forwarding host).
     @Published var liveAnalysisEnabled: Bool {
         didSet { defaults.set(liveAnalysisEnabled, forKey: Keys.liveAnalysisEnabled) }
@@ -120,6 +144,10 @@ final class AppSettings: ObservableObject {
         }
         uploadURL = defaults.string(forKey: Keys.uploadURL) ?? ""
         uploadAPIKey = defaults.string(forKey: Keys.uploadAPIKey) ?? ""
+        // Fall back to SupabaseConfig.swift until something was typed in Settings on this phone.
+        supabaseURL = defaults.string(forKey: Keys.supabaseURL).flatMap { $0.isEmpty ? nil : $0 } ?? SupabaseConfig.url
+        supabaseKey = defaults.string(forKey: Keys.supabaseKey).flatMap { $0.isEmpty ? nil : $0 } ?? SupabaseConfig.anonKey
+        supabaseTable = defaults.string(forKey: Keys.supabaseTable).flatMap { $0.isEmpty ? nil : $0 } ?? SupabaseConfig.table
         deviceNamePrefix = defaults.string(forKey: Keys.deviceNamePrefix) ?? "RoadReader"
         serviceUUID = defaults.string(forKey: Keys.serviceUUID) ?? AppSettings.nordicUARTService
         forwardingEnabled = defaults.object(forKey: Keys.forwardingEnabled) as? Bool ?? true
@@ -130,5 +158,6 @@ final class AppSettings: ObservableObject {
         liveAnalysisEnabled = defaults.object(forKey: Keys.liveAnalysisEnabled) as? Bool ?? true
         analysisPort = defaults.object(forKey: Keys.analysisPort) as? Int ?? 8081
         vehicleType = VehicleType(rawValue: defaults.string(forKey: Keys.vehicleType) ?? "") ?? .bike
+        liveBroadcastEnabled = defaults.object(forKey: Keys.liveBroadcastEnabled) as? Bool ?? false
     }
 }

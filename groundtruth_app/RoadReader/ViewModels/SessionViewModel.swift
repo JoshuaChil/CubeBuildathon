@@ -16,6 +16,8 @@ final class SessionViewModel: ObservableObject {
     let analysis = AnalysisClient()
     /// Recorded ride played back instead of the sensor (no ESP32 needed).
     let demo = DemoRide()
+    /// Live Broadcasting into Supabase (Settings > Supabase > Live broadcast).
+    let broadcaster = LiveBroadcaster()
 
     @Published private(set) var isReading = false
     /// True while the app runs on the bundled demo ride instead of a Bluetooth sensor.
@@ -30,6 +32,9 @@ final class SessionViewModel: ObservableObject {
     @Published private(set) var droppedCount = 0
     @Published private(set) var parseErrors = 0
     @Published private(set) var lastRawLine = ""
+    @Published private(set) var broadcastSent = 0
+    @Published private(set) var broadcastPending = 0
+    @Published private(set) var broadcastDropped = 0
     @Published var errorMessage: String?
 
     private var pending: [IMUSample] = []
@@ -57,6 +62,7 @@ final class SessionViewModel: ObservableObject {
                           forwarder.objectWillChange.eraseToAnyPublisher(),
                           recorder.objectWillChange.eraseToAnyPublisher(),
                           analysis.objectWillChange.eraseToAnyPublisher(),
+                          broadcaster.objectWillChange.eraseToAnyPublisher(),
                           settings.objectWillChange.eraseToAnyPublisher()] {
             publisher
                 .receive(on: RunLoop.main)
@@ -79,8 +85,11 @@ final class SessionViewModel: ObservableObject {
 
     // MARK: - Reading session
 
+    /// Start is blocked while the previous live session is still sending its last rows.
+    var canStartReadings: Bool { !isReading && broadcaster.status != .draining }
+
     func startReadings() {
-        guard !isReading else { return }
+        guard canStartReadings else { return }
         do {
             try recorder.startSession()
         } catch {
@@ -109,6 +118,15 @@ final class SessionViewModel: ObservableObject {
             bluetooth.startStreaming()
         }
 
+        if settings.canBroadcastLive, let creds = settings.supabaseCredentials {
+            let date = SupabaseUploader.sessionDate(for: Date())
+            broadcaster.start(credentials: creds, sessionDate: date,
+                              minimumNumber: SessionStore.localMaxSessionNumber(date: date) + 1)
+        }
+        broadcastSent = 0
+        broadcastPending = 0
+        broadcastDropped = 0
+
         recentSamples.removeAll()
         pending.removeAll()
         rowCount = 0
@@ -126,6 +144,7 @@ final class SessionViewModel: ObservableObject {
 
     func stopReadings() {
         guard isReading else { return }
+        let sessionName = recorder.currentFileURL?.lastPathComponent
         if isDemo {
             demo.stop()
         } else {
@@ -134,6 +153,22 @@ final class SessionViewModel: ObservableObject {
         recorder.endSession()
         forwarder.stop()
         analysis.stop()
+        if broadcaster.isActive {
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let receipt = await self.broadcaster.stop()
+                if let receipt, let sessionName {
+                    SessionStore.storeReceipt(receipt, forSession: sessionName)
+                } else {
+                    let missing = self.broadcaster.undeliveredRows + self.broadcaster.droppedRows
+                    if missing > 0 {
+                        self.errorMessage = "Live broadcast ended with \(missing) rows not delivered to Supabase. Upload the session from Sessions to send it in full."
+                    }
+                }
+                self.broadcastSent = self.broadcaster.sentRows
+                self.broadcastPending = 0
+            }
+        }
         cancelMark()
         isReading = false
         UIApplication.shared.isIdleTimerDisabled = false
@@ -206,6 +241,9 @@ final class SessionViewModel: ObservableObject {
         if settings.forwardingEnabled {
             forwarder.send(sample.csvRow)
         }
+        if broadcaster.isActive {
+            broadcaster.enqueue(sample)
+        }
         pending.append(sample)
         countSinceTick += 1
     }
@@ -244,5 +282,10 @@ final class SessionViewModel: ObservableObject {
         let c = forwarder.counters()
         forwardedCount = c.sent
         droppedCount = c.dropped
+        if broadcaster.isActive {
+            if broadcastSent != broadcaster.sentRows { broadcastSent = broadcaster.sentRows }
+            if broadcastPending != broadcaster.pendingRows { broadcastPending = broadcaster.pendingRows }
+            if broadcastDropped != broadcaster.droppedRows { broadcastDropped = broadcaster.droppedRows }
+        }
     }
 }

@@ -8,9 +8,7 @@ struct SessionsView: View {
     @State private var pendingDelete: SessionInfo?
 
     private var settings: AppSettings { session.settings }
-    private var hasEndpoint: Bool {
-        URL(string: settings.uploadURL)?.scheme?.hasPrefix("http") == true
-    }
+    private var hasEndpoint: Bool { !SessionStore.Destinations(settings: settings).isEmpty }
 
     var body: some View {
         NavigationStack {
@@ -28,6 +26,7 @@ struct SessionsView: View {
                                     SessionRow(info: info,
                                                analysis: store.analyses[info.name],
                                                isUploading: store.uploading.contains(info.name),
+                                               progress: store.progress[info.name],
                                                canUpload: hasEndpoint,
                                                onUpload: { store.upload(info, settings: settings) })
                                 }
@@ -51,7 +50,7 @@ struct SessionsView: View {
                             }
                         }
                     }
-                    .refreshable { store.reload() }
+                    .refreshable { store.reload(settings: settings) }
                     .navigationDestination(for: SessionInfo.self) { info in
                         SessionResultsView(info: info, analysis: store.analyses[info.name])
                     }
@@ -72,7 +71,7 @@ struct SessionsView: View {
                     Button("Done") { dismiss() }
                 }
             }
-            .onAppear { store.reload() }
+            .onAppear { store.reload(settings: settings) }
             .alert("Upload failed", isPresented: Binding(
                 get: { store.errorMessage != nil },
                 set: { if !$0 { store.errorMessage = nil } }
@@ -111,7 +110,7 @@ struct SessionsView: View {
                 summaryItem("Flagged", flagged.formatted(), tint: .red)
             }
             if !hasEndpoint {
-                Label("Set the upload URL in Settings to enable uploads.", systemImage: "info.circle")
+                Label("Set up Supabase (or an upload URL) in Settings to enable uploads.", systemImage: "info.circle")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -131,6 +130,7 @@ private struct SessionRow: View {
     let info: SessionInfo
     let analysis: UploadAnalysis?
     let isUploading: Bool
+    let progress: Double?
     let canUpload: Bool
     let onUpload: () -> Void
 
@@ -143,6 +143,13 @@ private struct SessionRow: View {
                     .foregroundStyle(.secondary)
                 if let a = analysis {
                     analysisLine(a)
+                }
+                if let r = info.supabase {
+                    Label("Supabase \(r.sessionDate) · session \(r.sessionNumber) · \(r.rows.formatted()) rows",
+                          systemImage: "cylinder")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
                 Text(info.name)
                     .font(.caption2.monospaced())
@@ -158,7 +165,12 @@ private struct SessionRow: View {
     @ViewBuilder
     private var trailing: some View {
         if isUploading {
-            ProgressView()
+            if let progress {
+                ProgressView(value: progress)
+                    .progressViewStyle(.circular)
+            } else {
+                ProgressView()
+            }
         } else if info.isUploaded {
             Label("Uploaded", systemImage: "checkmark.circle.fill")
                 .labelStyle(.iconOnly)

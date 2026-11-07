@@ -1,4 +1,4 @@
-"""Live road analysis of a ride in progress (used by roadreader_app/listener/listener.py).
+"""Live road analysis of a ride in progress (used by groundtruth_app/listener/listener.py).
 
 Rows arrive one by one from the phone.  A background thread re-runs the full pipeline on
 everything received so far every few seconds (a 10-minute ride at 200 Hz takes ~1-2 s),
