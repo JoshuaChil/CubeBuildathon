@@ -16,7 +16,7 @@ The box on the handlebar can't see the road. It only feels the bike shaking. The
 
 **Out:**
 - a map of the ride coloured by road condition (good / fair / poor / very poor, every 20 m)
-- pins for potholes, bumps, sunken patches and speed humps, each with a GPS location and a severity
+- pins for potholes, bumps, sunken patches and speed humps, each with a severity. They're found from the box's shaking alone; GPS only says where to put the pin
 - the shape of the road surface, accurate to a few millimetres, every 5 cm along the ride
 - a rough height profile of the hills
 
@@ -93,22 +93,27 @@ The result is the shape of the road surface under the front wheel, laid out ever
 
 The software also reports how rough the surface is at short distances (under 5 m), which is closer to what a cyclist actually feels.
 
-**Finding potholes and bumps.** The software looks for spots that dip or rise noticeably compared with the road around them. It looks at two sizes:
+**Finding potholes and bumps, without GPS.** Whether you rode over a pothole is decided from the box alone. GPS is only used afterwards to put the pin on the map, so a bad GPS fix (tall buildings, tunnels, no signal) can move a pin but can't add, remove or resize a pothole. To do this, the box works out by itself:
+- **which way is up**, from gravity (the slow part of the accelerometer signal), so it doesn't need the mounting calibration;
+- **which way the bike pitches**, from the axis the gyro wobbles around most when you hit bumps;
+- **how fast you're going**, from the echo: the rear wheel hits every bump a moment after the front wheel. That delay is the wheelbase divided by your speed. On the simulated rides this speed is within about 0.1–0.3 m/s of the truth.
+
+With those, it rebuilds the road shape under the tyre the same way as step 4, then looks for spots that dip or rise noticeably compared with the road around them. It looks at two sizes:
 - **Short features** (10 cm to 2 m long): potholes, steel plates, small bumps.
 - **Long features** (1 m to 8 m long): sunken patches, speed humps, raised crosswalks.
 
-To count, a dip or rise must be at least 20 mm (about an inch). On roads that are rough everywhere, like cobblestones, the bar goes up, so every cobblestone doesn't become a "pothole".
+To count, a dip or rise must be at least 20 mm (about an inch), and stand out 5 times more than the usual roughness around it (4 times for a car). On roads that are rough everywhere, like cobblestones, that raises the bar, so every cobblestone doesn't become a "pothole".
 
 **Cleaning up the list.** The same pothole is often found more than once, so only the strongest detection is kept. A sharp pothole can also leave a small fake "bump" right next to it, an echo of the reverse calculation, so those are removed too.
 
 Each pothole or bump gets:
-- a GPS location
+- a GPS location (looked up from the time it happened)
 - the time it happened in the ride
 - a severity from 0 to 1 (an 8 cm or deeper defect counts as 1)
 
 ## When things are missing
 
-- **No GPS:** the software guesses when you were moving from how much the box is shaking, and assumes a speed of 5 m/s. Distances and the map will be approximate, and the result carries a note saying so.
+- **No GPS:** potholes and bumps are found exactly as with GPS, but they can't go on the map. For the road shape and roughness, the software guesses when you were moving from how much the box is shaking and assumes a speed of 5 m/s, so distances are approximate, and the result carries a note saying so.
 - **No standing start:** the software still runs but warns that the mounting calibration may be off.
 - **Slow sample rate:** a bike frame vibrates 28–40 times a second, so the box needs to take readings at least about 120 times a second (200 is the target). Below that, the software warns that the bike's road profile is unreliable.
 
@@ -117,7 +122,7 @@ Each pothole or bump gets:
 These results come from simulated rides, where the true road is known and the software's answer can be checked against it.
 
 - **Road roughness: very reliable.** The reconstructed road shape matches the real one closely on every type of road tested (smooth and worn asphalt, potholes, cobblestones, gravel, speed bumps, concrete slabs, a mixed New York City route), for both bikes and cars. The roughness score is usually within 1–1.5 m/km of the truth.
-- **Potholes: most are found, with few false alarms.** On a heavily potholed street, it averaged about one false alarm every 350 m. It tends to report potholes as **shallower** than they really are (about 60–80% of the true depth), partly because a bike wheel skips over short, deep holes. Use depth to rank how bad potholes are, not as an exact measurement.
+- **Potholes: most are found, with few false alarms.** On a heavily potholed street, it averaged about one false alarm every 800 m on a bike. It tends to report potholes as **shallower** than they really are (about 60–80% of the true depth), partly because a bike wheel skips over short, deep holes. Use depth to rank how bad potholes are, not as an exact measurement.
 - **Hills: only approximate on a bike.** Expect about 0.5–1 m of error per kilometre on straight routes, and up to about 3 m with lots of turns, because leaning confuses the tilt estimate. Cars do better. Logging the phone's barometer would improve this.
 
 ## Limits
@@ -137,7 +142,8 @@ All paths are relative to `software/roadimu/roadimu/`.
 | 2. Mount calibration | `topo/preprocess.py` (`find_still`, `calibrate`) | Gravity vector at standstill → tilt; correlation with GPS dv/dt → yaw |
 | 3. Tilt, speed, hills | `topo/attitude.py` (`estimate`, `elevation_from_pitch`) | Mahony complementary filter with GPS-known acceleration removed; vibration-rectification correction |
 | 4. Road shape | `topo/profile.py` (`wiener_profile`) | Two-channel (acceleration + pitch rate) Wiener deconvolution in 4 s windows, ISO 8608 road prior, vehicle model from `vehicle.py` |
-| 5. Grading and events | `topo/roughness.py` (`segment_stats`, `detect_events`) | Golden-car IRI; running-median residual with an adaptive threshold at 3 m and 15 m scales |
+| 5. Grading | `topo/roughness.py` (`segment_stats`) | Golden-car IRI per 20 m |
+| Potholes and bumps (no GPS) | `topo/impacts.py` (`detect`), `topo/roughness.py` (`detect_events`) | Gravity from the accelerometer; pitch axis from gyro PCA, sign by model fit; speed from the front-rear wheel delay; Wiener deconvolution; running-median residual with an adaptive threshold at 3 m and 15 m scales |
 | Whole pipeline and outputs | `topo/pipeline.py` (`reconstruct`, `TopoConfig`) | Ties the steps together; all tuning settings live in `TopoConfig` |
 
 The full simulator, scoring and results table are in [`software/roadimu/README.md`](../software/roadimu/README.md).

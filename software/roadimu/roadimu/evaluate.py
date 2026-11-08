@@ -94,11 +94,10 @@ def score(
     dist_err_pct = float((res.distance[-1] - moved_true) / moved_true * 100.0)
 
     # events: map detections to true distance via time
-    d_mov, t_mov = res.distance[res.moving], tt[res.moving]
     det = []
-    for e in res.events:
-        t_e = np.interp(e["peak_m"], d_mov, t_mov)
-        det.append({**e, "x_true": float(np.interp(t_e, truth["t"], truth["x_front"]))})
+    for e in res.events:  # events carry their own time (they're found from the IMU alone)
+        x_at = lambda ts: float(np.interp(np.interp(ts, res.t, tt), truth["t"], truth["x_front"]))
+        det.append({**e, "x_true": x_at(e["t_s"]), "x0_true": x_at(e["t_start_s"]), "x1_true": x_at(e["t_end_s"])})
     thr = res.config.pothole_mm / 1e3
     tru = [e for e in truth["events"] if e["kind"] in EVENT_KINDS]
     expected = [e for e in tru if abs(e["felt_m"]) >= 1.3 * thr]
@@ -119,7 +118,7 @@ def score(
     for j, d in enumerate(det):
         if j in matched_det:
             continue
-        half = 0.5 * (d["end_m"] - d["start_m"]) + tol_m
+        half = 0.5 * abs(d["x1_true"] - d["x0_true"]) + tol_m
         if any((t["magnitude_m"] < 0) == (d["magnitude_m"] < 0) and t["start_m"] - half <= d["x_true"] <= t["end_m"] + half for t in surface):
             matched_det.add(j)
     n_exp = len(expected)

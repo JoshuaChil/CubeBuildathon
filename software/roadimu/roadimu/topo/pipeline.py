@@ -12,7 +12,12 @@ import numpy as np
 from ..appio import is_app_csv, read_app_csv
 from ..io import ImuLog, read_imu_csv
 from ..vehicle import nominal_model
-from . import attitude, preprocess, profile, roughness
+from . import attitude, impacts, preprocess, profile, roughness
+
+
+# Bikes shake more for the same road, so a bike event must stand out more from the surrounding
+# roughness (tuned on the simulated rides: fewer false alarms, same potholes found).
+EVENT_K_SIGMA = {"bike": 5.0, "car": 4.0}
 
 
 @dataclass
@@ -37,6 +42,7 @@ class TopoConfig:
     use_gyro: bool = True
     pothole_mm: float = 20.0  # ~ the common "1 inch" pothole definition
     bump_mm: float = 20.0
+    event_k_sigma: float | None = None  # an event must also stand out k x the local roughness (default: bike 5, car 4)
     attitude_kp: float = 0.1
     attitude_ki: float = 0.002
 
@@ -69,6 +75,7 @@ class TopoResult:
     events: list[dict] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)  # warnings about the input (no GPS, no still start...)
     input_info: dict = field(default_factory=dict)
+    impacts: impacts.ImpactResult | None = None  # the IMU-only bump detector's signals
 
     @property
     def topography(self) -> np.ndarray:
@@ -92,7 +99,7 @@ class TopoResult:
             "input": self.input_info,
             "segments": [{k: clean(v) for k, v in sg.items()} for sg in self.segments],
             "events": [
-                {"type": e["type"], "severity": round(e["severity"], 2), "magnitude_mm": round(e["magnitude_m"] * 1e3, 1), "length_m": round(e["end_m"] - e["start_m"], 2), "s_m": round(e["peak_m"], 1), "t_s": round(e["t_s"], 2), "lat": clean(e["lat"]), "lon": clean(e["lon"])}
+                {"type": e["type"], "severity": round(e["severity"], 2), "magnitude_mm": round(e["magnitude_m"] * 1e3, 1), "length_m": round(e["length_m"], 2), "s_m": round(e["peak_m"], 1), "t_s": round(e["t_s"], 2), "lat": clean(e["lat"]), "lon": clean(e["lon"]), "speed_mps": round(e["speed_mps"], 2), "source": "imu"}
                 for e in self.events
             ],
             "track": track,
@@ -134,7 +141,7 @@ class TopoResult:
             w = csv.writer(fh)
             w.writerow(["t_s", "lat", "lon", "type", "severity", "source", "magnitude_mm", "s_m", "length_m"])
             for e in self.events:
-                w.writerow([f"{e['t_s']:.2f}", f"{e['lat']:.7f}", f"{e['lon']:.7f}", e["type"], f"{e['severity']:.2f}", "model", f"{e['magnitude_m'] * 1e3:.1f}", f"{e['peak_m']:.1f}", f"{e['end_m'] - e['start_m']:.2f}"])
+                w.writerow([f"{e['t_s']:.2f}", f"{e['lat']:.7f}", f"{e['lon']:.7f}", e["type"], f"{e['severity']:.2f}", "imu", f"{e['magnitude_m'] * 1e3:.1f}", f"{e['peak_m']:.1f}", f"{e['length_m']:.2f}"])
         paths["summary"].write_text(json.dumps(self.summary(), indent=2))
         return paths
 
@@ -210,7 +217,35 @@ def reconstruct(source: str | Path | ImuLog, cfg: TopoConfig | None = None, name
     )
     baseline_t = profile.double_integration(acc_z, prep.fs)
 
-    # 4. onto distance, add hills, roughness and events
+    # 4. bumps and potholes: judged from the IMU alone (impacts.py).  Nothing below
+    # feeds into it, so GPS errors can't add, drop or resize an event.
+    imp = impacts.detect(
+        prep.t,
+        prep.acc,
+        prep.gyro,
+        prep.gap,
+        prep.fs,
+        model,
+        cfg.vehicle,
+        imu_bw or cfg.imu_filter_bw_fraction * prep.fs,
+        pothole_m=cfg.pothole_mm / 1e3,
+        bump_m=cfg.bump_mm / 1e3,
+        k_sigma=cfg.event_k_sigma or EVENT_K_SIGMA.get(cfg.vehicle, 4.0),
+        dx=cfg.dx,
+        window_s=cfg.window_s,
+        prior_class=cfg.prior_class,
+        acc_noise=cfg.acc_noise,
+        rate_noise=cfg.rate_noise,
+        acc_lf_noise=cfg.acc_lf_noise,
+        rate_lf_noise=cfg.rate_lf_noise,
+        lf_corner_hz=cfg.lf_corner_hz,
+        model_error=cfg.model_error,
+        lambda_max_m=cfg.lambda_max_m,
+        lambda_min_m=cfg.lambda_min_m,
+    )
+    notes.extend(imp.notes)
+
+    # 5. topography: onto distance (GPS + IMU), hills and roughness - and the map position of each event
     if has_gps:
         lat_t = np.interp(prep.t, prep.gps_t, prep.gps_lat)
         lon_t = np.interp(prep.t, prep.gps_t, prep.gps_lon)
@@ -226,11 +261,13 @@ def reconstruct(source: str | Path | ImuLog, cfg: TopoConfig | None = None, name
     for sg in segs:
         mid = 0.5 * (sg["start_m"] + sg["end_m"])
         sg["lat"], sg["lon"] = float(np.interp(mid, s, lat_s)), float(np.interp(mid, s, lon_s))
-    events = roughness.detect_events(s, prof, cfg.dx, cfg.pothole_mm / 1e3, cfg.bump_mm / 1e3)
-    d_mov, t_mov = att.distance[moving], prep.t[moving]
-    for e in events:
-        e["lat"], e["lon"] = float(np.interp(e["peak_m"], s, lat_s)), float(np.interp(e["peak_m"], s, lon_s))
-        e["t_s"] = float(np.interp(e["peak_m"], d_mov, t_mov))
+    events = []
+    for ev in imp.events:  # place each IMU event on the map: GPS position / ride distance at its time
+        e = dict(ev)
+        e["length_m"] = ev["end_m"] - ev["start_m"]  # from the IMU-only speed
+        e["peak_m"], e["start_m"], e["end_m"] = (float(np.interp(ev[k], prep.t, att.distance)) for k in ("t_s", "t_start_s", "t_end_s"))
+        e["lat"], e["lon"] = float(np.interp(ev["t_s"], prep.t, lat_t)), float(np.interp(ev["t_s"], prep.t, lon_t))
+        events.append(e)
 
     return TopoResult(
         name=name,
@@ -257,6 +294,7 @@ def reconstruct(source: str | Path | ImuLog, cfg: TopoConfig | None = None, name
         events=events,
         notes=notes,
         input_info=input_info,
+        impacts=imp,
     )
 
 

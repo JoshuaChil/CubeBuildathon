@@ -7,7 +7,7 @@ This package has two halves:
    - the road surface profile (mm)
    - hills (m)
    - roughness (IRI) per 20 m
-   - a list of potholes and bumps with GPS positions
+   - a list of potholes and bumps, judged from the IMU alone and placed on the map with GPS
 
 Because the simulator knows the true road, every part of the pipeline is scored against ground truth.
 
@@ -48,10 +48,12 @@ Scenarios: `smooth_asphalt`, `worn_asphalt`, `potholes`, `cobblestone`, `gravel`
 ## How the pipeline turns vibration into topography
 
 ```
-IMU CSV ──► 1. clean-up ──► 2. calibrate mount ──► 3. attitude + speed ──► 4. road profile ──► 5. roughness + events
-            uniform 200 Hz   gravity at standstill   GPS-aided complementary  model-based Wiener     IRI per 20 m, potholes,
-            GPS fixes        -> tilt; GPS dv/dt       filter -> pitch/roll,    deconvolution          bumps, depressions
-            lost packets     -> which way is forward  speed, distance, hills   (accel + gyro)         with lat/lon
+IMU CSV ──► 1. clean-up ──► 2. calibrate mount ──► 3. attitude + speed ──► 4. road profile ──► 5. roughness
+            uniform 200 Hz   gravity at standstill   GPS-aided complementary  model-based Wiener     IRI per 20 m
+            GPS fixes        -> tilt; GPS dv/dt       filter -> pitch/roll,    deconvolution          with lat/lon
+            lost packets     -> which way is forward  speed, distance, hills   (accel + gyro)
+        │
+        └──► 6. potholes + bumps from the IMU only (own "up", pitch axis and speed) ──► GPS adds the map position
 ```
 
 1. **Clean-up** (`topo/preprocess.py`): put samples on a uniform time grid and flag the gaps from lost packets.
@@ -66,10 +68,17 @@ IMU CSV ──► 1. clean-up ──► 2. calibrate mount ──► 3. attitude
 4. **Road profile** (`topo/profile.py`): the IMU measures the vehicle's *response* to the road, not the road itself.
    - **Inversion:** a multi-channel Wiener filter in 4 s windows using the vehicle model, which includes the rear wheel hitting each bump later and the IMU's own filter. The gyro's pitch rate separates front-wheel hits from rear-wheel hits.
    - **Lost packets:** filled with zero, not interpolated. A straight line across a 2 g vibration creates a fake 20 cm pothole.
-5. **Roughness and events** (`topo/roughness.py`):
+5. **Roughness** (`topo/roughness.py`):
    - **IRI:** the standard "golden car" International Roughness Index, which DOTs use.
    - **RMS roughness:** for wavelengths under 5 m, closer to what a cyclist feels.
-   - **Event detection:** dips and rises against a running median at two scales (3 m and 15 m), with a threshold that adapts to local roughness, so cobblestones don't count as potholes.
+6. **Potholes and bumps, from the IMU alone** (`topo/impacts.py`). GPS is only used for the map: a bad fix, an
+   urban canyon or no GPS at all can move a pin but can't add, remove or resize an event (`test_bump_detection_ignores_gps`).
+   - **Up:** the slow (< 0.3 Hz) part of the accelerometer is gravity; vertical acceleration is measured along it. No mounting calibration needed.
+   - **Pitch axis:** the horizontal axis the gyro vibrates around most (> 3 Hz). Its sign is the one for which the vehicle model explains accelerometer and gyro together best.
+   - **Speed, from the front-rear echo:** the rear tyre hits every bump `wheelbase / speed` after the front one. In each 4 s window the pipeline tries speeds from 1 to 14 m/s (car: 25) and keeps the one that fits both channels best. Median error on the simulated rides: 0.05–0.3 m/s. Where nothing fits, the vehicle is standing still.
+   - **Road under the tyre:** the same Wiener deconvolution as step 4, driven by these IMU-only signals.
+   - **Event detection:** dips and rises against a running median at two scales (3 m and 15 m). The threshold is the larger of 20 mm and k × the local roughness (k = 5 for a bike, 4 for a car), so cobblestones don't count as potholes.
+   - **Map position:** each event's time is looked up in the GPS track and the ride distance.
 
 The baseline (double integration with high-pass filters) is computed alongside for comparison.
 
@@ -85,18 +94,18 @@ The baseline (double integration with high-pass filters) is computed alongside f
 | worn_asphalt_car | 0.99 | -0.11 | 0.7 / 4.0 | 8.1 / 8.2 | 1/1 | 0 | 0.41 | -0.1% |
 | potholes_bike | 0.93 | 0.84 | 2.1 / 5.5 | 9.0 / 10.5 | 5/6 | 0 | 0.59 | +1.1% |
 | potholes_car | 0.95 | -0.06 | 1.8 / 5.4 | 11.5 / 10.5 | 6/6 | 0 | 0.31 | -0.3% |
-| cobblestone_bike | 0.86 | 0.72 | 2.1 / 3.7 | 6.9 / 6.5 | 0/0 | 1 | 0.67 | +3.0% |
+| cobblestone_bike | 0.86 | 0.72 | 2.1 / 3.7 | 6.9 / 6.5 | 0/0 | 0 | 0.67 | +3.0% |
 | cobblestone_car | 0.98 | 0.01 | 0.8 / 3.6 | 6.1 / 6.5 | 0/0 | 0 | 0.03 | -0.4% |
 | gravel_bike | 0.98 | 0.91 | 1.3 / 6.9 | 11.5 / 12.2 | 0/0 | 0 | 1.02 | +3.9% |
-| gravel_car | 0.96 | 0.27 | 2.0 / 6.8 | 13.4 / 12.3 | 0/0 | 0 | 0.09 | -0.6% |
+| gravel_car | 0.96 | 0.27 | 2.0 / 6.8 | 13.4 / 12.3 | 0/0 | 2 | 0.09 | -0.6% |
 | speed_bumps_bike | 0.91 | 0.67 | 1.8 / 4.2 | 5.5 / 5.5 | 2/3 | 0 | 0.90 | -0.3% |
 | speed_bumps_car | 0.85 | 0.17 | 2.2 / 4.2 | 4.1 / 5.5 | 2/3 | 0 | 0.11 | -0.4% |
 | concrete_slabs_bike | 0.98 | 0.95 | 0.5 / 2.5 | 5.2 / 5.5 | 0/0 | 0 | 0.58 | +1.2% |
 | concrete_slabs_car | 0.99 | -0.13 | 0.4 / 2.5 | 5.4 / 5.5 | 0/0 | 0 | 0.08 | -0.5% |
-| nyc_mixed_bike | 0.91 | 0.79 | 2.1 / 5.0 | 8.7 / 8.7 | 3/5 | 2 | 3.02 | -1.7% |
-| nyc_mixed_car | 0.97 | 0.05 | 1.2 / 4.9 | 8.1 / 8.7 | 3/5 | 1 | 0.97 | -0.5% |
+| nyc_mixed_bike | 0.91 | 0.79 | 2.1 / 5.0 | 8.7 / 8.7 | 3/5 | 1 | 3.02 | -1.7% |
+| nyc_mixed_car | 0.97 | 0.05 | 1.2 / 4.9 | 8.1 / 8.7 | 3/5 | 2 | 0.97 | -0.5% |
 
-Across 8 random seeds of the `potholes` road on a bike, the pipeline found 29 of 44 expected events with 7 false alarms. That's about one false alarm per 350 m on a heavily potholed street.
+Across 8 random seeds of the `potholes` road on a bike (3.1 km), the IMU-only detector found 28 of 44 expected events with 4 false alarms: about one false alarm per 800 m on a heavily potholed street. The GPS-distance detector it replaced found 29 with 7 false alarms. On cars it finds the same events as before but raises a few more false alarms (seed 0: 4 vs 1), mostly on gravel.
 
 ### What this means (and its limits)
 
@@ -128,7 +137,7 @@ live and on a map. Parts of the package involved:
   of failing.
 - **`simulate --format app` and `replay`:** produce and stream app-format rides for demos without hardware.
 
-How well it works on the app's data stream (simulated, potholes + NYC routes, 2 seeds each):
+How well it works on the app's data stream (simulated, potholes + NYC routes, 2 seeds each; measured with the earlier GPS-distance event detector):
 
 | Firmware | Bike profile corr | Bike events found / false | Car profile corr |
 |---|---|---|---|
@@ -156,7 +165,7 @@ roadimu/
   road.py        road surfaces + tyre envelope          sensors.py   IMU / GPS / button models
   vehicle.py     bike & car dynamics, FRF, time sim     simulate.py  scenario -> CSV + truth
   scenarios.py   the 8 road conditions                  evaluate.py  scoring vs truth
-  topo/          preprocess, attitude, profile, roughness, pipeline
+  topo/          preprocess, attitude, profile, roughness, impacts (IMU-only events), pipeline
   plots.py       report + evaluation figures            __main__.py  CLI
 tests/           physics sanity checks + end-to-end reconstruction test
 ```
