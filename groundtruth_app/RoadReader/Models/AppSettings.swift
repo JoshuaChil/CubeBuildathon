@@ -29,11 +29,12 @@ final class AppSettings: ObservableObject {
         static let analysisPort = "analysisPort"
         static let vehicleType = "vehicleType"
         static let liveBroadcastEnabled = "liveBroadcastEnabled"
+        static let dashboardURL = "dashboardURL"
 
         static let persistable: Set<String> = [
             forwardingEnabled, forwardHost, forwardPort, forwardProtocol, uploadURL,
             liveAnalysisEnabled, analysisPort, vehicleType, deviceNamePrefix,
-            supabaseURL, supabaseKey, supabaseTable, liveBroadcastEnabled,
+            supabaseURL, supabaseKey, supabaseTable, liveBroadcastEnabled, dashboardURL,
         ]
     }
 
@@ -87,11 +88,34 @@ final class AppSettings: ObservableObject {
     var supabaseCredentials: SupabaseUploader.Credentials? {
         SupabaseUploader.Credentials(url: supabaseURL, anonKey: supabaseKey, table: supabaseTable)
     }
-    /// Live Broadcasting: stream rows into the Supabase table while recording (needs supabaseCredentials).
+    /// Live Broadcasting: stream rows to the GroundTruth dashboard server while recording
+    /// (software/dashboard/server.py; see DashboardStreamer for the requests).
     @Published var liveBroadcastEnabled: Bool {
         didSet { defaults.set(liveBroadcastEnabled, forKey: Keys.liveBroadcastEnabled) }
     }
-    var canBroadcastLive: Bool { liveBroadcastEnabled && supabaseCredentials != nil }
+    /// Dashboard server address, e.g. http://192.168.1.20:8090. Blank = the forwarding host on port 8090.
+    @Published var dashboardURL: String {
+        didSet { defaults.set(dashboardURL, forKey: Keys.dashboardURL) }
+    }
+    static let defaultDashboardPort = 8090
+    /// The dashboard base URL actually used (`dashboardURL`, or the forwarding host on the default port).
+    var dashboardEndpoint: URL? {
+        var text = dashboardURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.isEmpty {
+            let host = forwardHost.trimmingCharacters(in: .whitespaces)
+            guard !host.isEmpty else { return nil }
+            text = "http://\(host):\(Self.defaultDashboardPort)"
+        } else if !text.contains("://") {
+            text = "http://" + text
+        }
+        guard var comps = URLComponents(string: text), comps.scheme?.hasPrefix("http") == true,
+              comps.host?.isEmpty == false else { return nil }
+        comps.query = nil
+        comps.fragment = nil
+        while comps.path.hasSuffix("/") { comps.path.removeLast() }
+        return comps.url
+    }
+    var canBroadcastLive: Bool { liveBroadcastEnabled && dashboardEndpoint != nil }
     /// Show live road analysis while recording (polls listener.py --analyze on the forwarding host).
     @Published var liveAnalysisEnabled: Bool {
         didSet { defaults.set(liveAnalysisEnabled, forKey: Keys.liveAnalysisEnabled) }
@@ -159,5 +183,6 @@ final class AppSettings: ObservableObject {
         analysisPort = defaults.object(forKey: Keys.analysisPort) as? Int ?? 8081
         vehicleType = VehicleType(rawValue: defaults.string(forKey: Keys.vehicleType) ?? "") ?? .bike
         liveBroadcastEnabled = defaults.object(forKey: Keys.liveBroadcastEnabled) as? Bool ?? false
+        dashboardURL = defaults.string(forKey: Keys.dashboardURL) ?? ""
     }
 }

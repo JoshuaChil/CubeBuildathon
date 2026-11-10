@@ -27,9 +27,8 @@
   </header>
 
   <main class="page">
-    <p class="eyebrow">GroundTruth / Live telemetry / <span id="tableName">readings</span></p>
-    <h1>Every trip reveals more.</h1>
-    <p class="lede">Accelerometer stream from the Road Reader app, read straight out of Supabase as it lands.</p>
+    <p class="eyebrow">GroundTruth / Live telemetry</p>
+    <h1>Live telemetry</h1>
 
     <section class="controls" aria-label="Session controls">
       <button id="startBtn" class="btn btn-primary" type="button">Start Reading Session</button>
@@ -47,17 +46,30 @@
         <input type="checkbox" id="soundChk">
         <span>Sound on bump</span>
       </label>
+      <span class="field-group">
+        <label class="field field-num">
+          <span>Filter threshold</span>
+          <input type="number" id="thrInput" min="0.05" max="10" step="0.05" value="0.8">
+          <span class="unit">g</span>
+        </label>
+        <label class="field field-check">
+          <input type="checkbox" id="adaptChk">
+          <span>Adaptive (MAD)</span>
+        </label>
+        <span class="chip mono" id="thrNow">0.80 g</span>
+      </span>
     </section>
 
     <section class="stats" aria-label="Session statistics">
       <div class="tile"><span class="tile-label">Rows received</span><span class="tile-value" id="statRows">0</span></div>
       <div class="tile"><span class="tile-label">Rate</span><span class="tile-value"><span id="statRate">0</span><span class="tile-unit">Hz</span></span></div>
       <div class="tile"><span class="tile-label">Lag</span><span class="tile-value"><span id="statLag">—</span><span class="tile-unit">s</span></span></div>
-      <div class="tile"><span class="tile-label">Bumps detected</span><span class="tile-value" id="statBumps">0</span></div>
+      <div class="tile"><span class="tile-label">Phone flags</span><span class="tile-value" id="statBumps">0</span></div>
+      <div class="tile tile-filter"><span class="tile-label">Filter detections</span><span class="tile-value" id="statDet">0</span></div>
       <div id="signal" class="signal" role="status" aria-live="polite">
         <span class="signal-dot"></span>
-        <span class="signal-text" id="signalText">Watching for anomalies</span>
-        <span class="signal-sub mono" id="signalSub">Detect Bump on the phone flags rows</span>
+        <span class="signal-text" id="signalText">No bump</span>
+        <span class="signal-sub mono" id="signalSub">Phone flag or |a| → 3 Hz high-pass > threshold</span>
       </div>
     </section>
 
@@ -83,8 +95,15 @@
         </div>
         <canvas id="azChart" role="img" aria-label="Accelerometer Z over time"></canvas>
       </div>
+      <div class="card chart-card chart-filter">
+        <div class="card-head">
+          <h2>Bump filter <span class="unit">|a| → 3 Hz high-pass, g</span></h2>
+          <span class="mono muted" id="hpNow">—</span>
+        </div>
+        <canvas id="hpChart" role="img" aria-label="High-passed acceleration magnitude over time with the detection threshold"></canvas>
+      </div>
       <div id="tooltip" class="tooltip" hidden></div>
-      <p class="legend-note"><span class="key key-line"></span>Acceleration <span class="key key-band"></span>Bump observation</p>
+      <p class="legend-note"><span class="key key-line"></span>Acceleration <span class="key key-band"></span>Phone flag</p>
     </section>
 
     <section class="grid-2">
@@ -95,24 +114,21 @@
       <div class="card">
         <div class="card-head"><h2>Recent readings</h2><span class="mono muted">last 12 rows</span></div>
         <table id="table" class="data-table">
-          <thead><tr><th>t (s)</th><th>ax</th><th>ay</th><th>az</th><th>bump</th></tr></thead>
-          <tbody><tr><td colspan="5" class="empty">Start a session to see rows.</td></tr></tbody>
+          <thead><tr><th>t (s)</th><th>ax</th><th>ay</th><th>az</th><th>|hp|</th><th>flag</th></tr></thead>
+          <tbody><tr><td colspan="6" class="empty">Start a session to see rows.</td></tr></tbody>
         </table>
       </div>
     </section>
 
-    <p class="footnote mono">Green primary / brown supporting · polling <span id="pollMs">500</span> ms · only rows inserted after Start are shown</p>
+    <p class="footnote mono">Green primary / brown supporting · live stream (server-sent events) · only rows received after Start are shown</p>
   </main>
 
   <dialog id="settings" class="dialog">
     <form method="dialog" id="settingsForm">
-      <p class="eyebrow">Settings / Supabase</p>
+      <p class="eyebrow">Settings / Dashboard server</p>
       <h2>Connection</h2>
-      <label class="field-block"><span>Project URL</span><input id="cfgUrl" type="url" required placeholder="https://xxxx.supabase.co" autocomplete="off" spellcheck="false"></label>
-      <label class="field-block"><span>Publishable key</span><input id="cfgKey" type="text" required autocomplete="off" spellcheck="false"></label>
-      <label class="field-block"><span>Table</span><input id="cfgTable" type="text" required autocomplete="off" spellcheck="false"></label>
-      <label class="field-block"><span>Poll interval (ms)</span><input id="cfgPoll" type="number" min="100" max="5000" step="50" required></label>
-      <p class="help">Defaults come from <code>config.js</code>, the same values as the iPhone app. Saving stores overrides in this browser only.</p>
+      <label class="field-block"><span>Server URL</span><input id="cfgUrl" type="url" placeholder="http://localhost:8090" autocomplete="off" spellcheck="false"></label>
+      <p class="help">Leave blank to use the server this page was loaded from (<code>server.py</code>). Set it only when the page is opened from the file system or hosted elsewhere. The phone must point at the same server (Settings → Live dashboard). Saving stores the override in this browser only.</p>
       <div class="dialog-actions">
         <button class="btn btn-ghost" type="button" id="cfgReset">Reset to config.js</button>
         <button class="btn btn-ghost" type="button" id="cfgCancel">Cancel</button>
@@ -122,6 +138,7 @@
   </dialog>
 
   <script src="config.js"></script>
+  <script src="filter.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

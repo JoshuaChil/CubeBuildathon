@@ -1,7 +1,8 @@
 /* GroundTruth live telemetry dashboard.
- * Polls the Supabase `readings` table (PostgREST) and draws ax/ay/az over time.
- * Only rows inserted after "Start Reading Session" are shown: on start we read the current
- * max id and then ask for id > watermark on every poll.
+ * Subscribes to the dashboard server's Server-Sent Events stream (server.py, GET /stream) and draws
+ * ax/ay/az over time. The phone POSTs its rows to the same server about four times a second; the server
+ * fans them out to every open browser, so only rows received after "Start Reading Session" are shown.
+ * Every row also goes through the live bump filter (filter.js): |a| -> 3 Hz high-pass -> threshold.
  */
 (() => {
   "use strict";
@@ -12,7 +13,7 @@
   };
   const STORAGE_KEY = "gt.dashboard.config";
   const MAX_POINTS = 60_000;
-  // ?demo=1 synthesises a local 200 Hz stream (no Supabase) for layout checks and hardware-free demos.
+  // ?demo=1 synthesises a local 200 Hz stream (no server) for layout checks and hardware-free demos.
   // ?autostart=1 clicks Start Reading Session on load (kiosk screens).
   const params = new URLSearchParams(location.search);
   const DEMO = params.has("demo");
@@ -20,7 +21,7 @@
 
   // ---------- config ----------
   const defaults = Object.assign(
-    { supabaseUrl: "", supabaseKey: "", table: "readings", pollMs: 500, windowSeconds: 20 },
+    { serverUrl: "", windowSeconds: 20, hpThreshold: 0.8, hpAdaptive: false },
     window.GROUNDTRUTH_CONFIG || {}
   );
   function loadConfig() {
@@ -34,18 +35,27 @@
   // ---------- state ----------
   const state = {
     running: false,
-    lastId: 0,
+    source: null,          // EventSource on /stream while running
+    demoTimer: null,
     t0: null,              // ms epoch of the first row of this session
-    points: [],            // {id, t, ax, ay, az, bump, lat, lon, session, at}
-    spans: [],             // {t0, t1} bump observations
-    events: [],
+    points: [],            // {id, t, ax, ay, az, mag, hp, thr, bump, lat, lon, session, at}
+    spans: [],             // {t0, t1} bump observations (app flag)
+    events: [],            // app flags
+    detEvents: [],         // live filter detections {t, at, lat, lon, session, g}
+    detector: null,        // GTFilter.BumpFilter for this session
     inBump: false,
     rateWindow: [],        // receive timestamps for Hz
     hoverT: null,
     windowSeconds: Number(cfg.windowSeconds) || 20,
-    pollTimer: null,
     lastSession: null,
     needsDraw: false,
+    // Smooth scrolling: the x axis follows the wall clock, held `displayLag` s behind the newest row so that
+    // rows arriving in batches slide in from the right edge instead of the chart jumping once per batch.
+    clockOffsetMs: null,   // Date.now() - `at` of the newest row (phone clock -> browser clock)
+    lastArrival: null,     // Date.now() of the last non-empty poll
+    batchGap: 1.0,         // longest interval between batches seen recently (s)
+    displayLag: 1.5,       // eased value actually used for the axis (s)
+    rafId: null,
   };
 
   // ---------- DOM ----------
@@ -53,39 +63,50 @@
   const el = {
     conn: $("conn"), connText: $("connText"), startBtn: $("startBtn"), stopBtn: $("stopBtn"),
     sessionChip: $("sessionChip"), windowSel: $("windowSel"), soundChk: $("soundChk"),
-    statRows: $("statRows"), statRate: $("statRate"), statLag: $("statLag"), statBumps: $("statBumps"),
+    thrInput: $("thrInput"), adaptChk: $("adaptChk"), thrNow: $("thrNow"),
+    statRows: $("statRows"), statRate: $("statRate"), statLag: $("statLag"), statBumps: $("statBumps"), statDet: $("statDet"),
     signal: $("signal"), signalText: $("signalText"), signalSub: $("signalSub"), flash: $("flash"),
     tooltip: $("tooltip"), charts: $("charts"), events: $("events"), eventsCount: $("eventsCount"),
-    table: $("table").querySelector("tbody"), tableName: $("tableName"), pollMs: $("pollMs"),
+    table: $("table").querySelector("tbody"),
     settings: $("settings"), settingsBtn: $("settingsBtn"), settingsForm: $("settingsForm"),
-    cfgUrl: $("cfgUrl"), cfgKey: $("cfgKey"), cfgTable: $("cfgTable"), cfgPoll: $("cfgPoll"),
-    cfgReset: $("cfgReset"), cfgCancel: $("cfgCancel"),
-    now: { ax: $("axNow"), ay: $("ayNow"), az: $("azNow") },
+    cfgUrl: $("cfgUrl"), cfgReset: $("cfgReset"), cfgCancel: $("cfgCancel"),
+    now: { ax: $("axNow"), ay: $("ayNow"), az: $("azNow"), hp: $("hpNow") },
   };
 
-  // ---------- Supabase (PostgREST) ----------
-  function baseUrl() {
-    const u = String(cfg.supabaseUrl || "").trim().replace(/\/+$/, "");
-    return `${u}/rest/v1/${encodeURIComponent(String(cfg.table || "readings").trim())}`;
+  // ---------- dashboard server (server.py) ----------
+  // Blank serverUrl = the server this page came from. A page opened from the file system has no origin,
+  // so it falls back to localhost:8090 until Settings says otherwise.
+  function serverBase() {
+    const u = String(cfg.serverUrl || "").trim().replace(/\/+$/, "");
+    if (u) return u;
+    return location.protocol.startsWith("http") ? location.origin : "http://localhost:8090";
   }
-  function headers() {
-    return { apikey: cfg.supabaseKey, Authorization: `Bearer ${cfg.supabaseKey}`, Accept: "application/json" };
+  function serverHost() { try { return new URL(serverBase()).host; } catch { return serverBase(); } }
+  async function fetchStatus() {
+    const res = await fetch(`${serverBase()}/status`, { cache: "no-store" });
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    return res.json();
   }
-  async function query(params) {
-    const res = await fetch(`${baseUrl()}?${params}`, { headers: headers() });
-    const text = await res.text();
-    if (!res.ok) {
-      let msg = text;
-      try { msg = JSON.parse(text).message || text; } catch {}
-      throw new Error(`${res.status} ${msg}`.slice(0, 160));
-    }
-    return text ? JSON.parse(text) : [];
+  function openStream() {
+    const es = new EventSource(`${serverBase()}/stream`);
+    es.onopen = () => { if (state.running) setConn("live", "Live · waiting for rows from the phone"); };
+    es.onmessage = (e) => {
+      if (!state.running) return;
+      let msg;
+      try { msg = JSON.parse(e.data); } catch { return; }
+      if (Array.isArray(msg.rows) && msg.rows.length) ingest(msg.rows);
+      else if (msg.event === "start") {
+        state.lastSession = msg.session || state.lastSession;
+        el.sessionChip.textContent = state.lastSession || "Session";
+        setConn("live", `Live · phone started ${msg.session || "a session"}`);
+      } else if (msg.event === "stop") {
+        setConn("live", `Live · phone stopped ${msg.session || "the session"}${Number.isFinite(msg.rows_sent) ? ` · ${Number(msg.rows_sent).toLocaleString()} rows` : ""}`);
+      }
+    };
+    // EventSource reconnects by itself and sends Last-Event-ID, so the server replays what was missed.
+    es.onerror = () => { if (state.running) setConn("err", `Reconnecting to ${serverHost()}…`); };
+    return es;
   }
-  const maxId = async () => DEMO ? 0 : (await query("select=id&order=id.desc&limit=1"))[0]?.id ?? 0;
-  const fetchNew = (afterId) => DEMO ? demoRows() : query(
-    "select=id,session_date,session_number,recorded_at,ax,ay,az,latitude,longitude,anomaly_detected" +
-    `&id=gt.${afterId}&order=id.asc&limit=2000`
-  );
 
   // ---------- demo generator ----------
   const demo = { id: 0, start: null, lastGen: null, nextBumpAt: 3, bumpUntil: -1, bumpT0: 0 };
@@ -93,7 +114,6 @@
     const now = Date.now();
     if (demo.start === null) { demo.start = now; demo.lastGen = now; return []; }
     const rows = [];
-    const today = new Date().toISOString().slice(0, 10);
     for (let ts = demo.lastGen + 5; ts <= now; ts += 5) {
       const t = (ts - demo.start) / 1000;
       if (t >= demo.nextBumpAt) {
@@ -112,8 +132,8 @@
         ay += 0.4 * k * gauss();
       }
       rows.push({
-        id: ++demo.id, session_date: today, session_number: 0, recorded_at: new Date(ts).toISOString(),
-        ax, ay, az, latitude: 40.7128 + t * 1e-5, longitude: -74.006 + t * 1e-5, anomaly_detected: inBump ? 1 : 0,
+        id: ++demo.id, at: ts, ax, ay, az, gx: 0, gy: 0, gz: 0,
+        lat: 40.7128 + t * 1e-5, lon: -74.006 + t * 1e-5, flag: inBump ? 1 : 0, session: "demo",
       });
     }
     demo.lastGen = now;
@@ -127,14 +147,16 @@
     el.connText.textContent = text;
   }
   async function checkConnection() {
-    if (DEMO) { setConn("ok", "Demo · synthetic data, no Supabase"); return true; }
-    if (!cfg.supabaseUrl || !cfg.supabaseKey) { setConn("err", "No credentials: open Settings"); return false; }
+    if (DEMO) { setConn("ok", "Demo · synthetic data, no server"); return true; }
     try {
-      await query("select=id&limit=1");
-      setConn("ok", `Connected · ${new URL(cfg.supabaseUrl).host}`);
+      const s = await fetchStatus();
+      const phone = s.phone && Number.isFinite(s.phone.seen_ms_ago)
+        ? ` · phone seen ${s.phone.seen_ms_ago < 5000 ? "just now" : `${Math.round(s.phone.seen_ms_ago / 1000)} s ago`}`
+        : " · no phone yet";
+      setConn("ok", `Connected · ${serverHost()}${phone}`);
       return true;
     } catch (e) {
-      setConn("err", /PGRST205|schema cache/.test(e.message) ? `Table "${cfg.table}" missing: run schema.sql` : `Error: ${e.message}`);
+      setConn("err", `No dashboard server at ${serverHost()}: run server.py`);
       return false;
     }
   }
@@ -144,17 +166,13 @@
     if (state.running) return;
     el.startBtn.disabled = true;
     if (!(await checkConnection())) { el.startBtn.disabled = false; return; }
-    try {
-      state.lastId = await maxId();
-    } catch (e) {
-      setConn("err", `Error: ${e.message}`);
-      el.startBtn.disabled = false;
-      return;
-    }
     Object.assign(state, {
-      running: true, t0: null, points: [], spans: [], events: [], inBump: false,
+      running: true, t0: null, points: [], spans: [], events: [], detEvents: [], inBump: false,
       rateWindow: [], hoverT: null, lastSession: null,
+      detector: new GTFilter.BumpFilter({ threshold: currentThreshold(), adaptive: el.adaptChk.checked }),
+      clockOffsetMs: null, lastArrival: null, batchGap: 1.0, displayLag: 1.5,
     });
+    startFrames();
     el.stopBtn.disabled = false;
     el.stopBtn.classList.add("btn-stop");
     el.sessionChip.textContent = "Waiting for rows…";
@@ -162,15 +180,21 @@
     renderEvents();
     renderTable();
     updateStats();
-    setConn("live", "Live · waiting for new rows");
+    setConn("live", "Live · waiting for rows from the phone");
     requestDraw();
-    poll();
+    if (DEMO) {
+      demoRows();   // primes the generator clock
+      state.demoTimer = setInterval(() => { const rows = demoRows(); if (rows.length) ingest(rows); }, 200);
+    } else {
+      state.source = openStream();
+    }
   }
 
   function stop() {
     state.running = false;
-    clearTimeout(state.pollTimer);
-    state.pollTimer = null;
+    stopFrames();
+    if (state.source) { state.source.close(); state.source = null; }
+    if (state.demoTimer) { clearInterval(state.demoTimer); state.demoTimer = null; }
     el.startBtn.disabled = false;
     el.stopBtn.disabled = true;
     el.stopBtn.classList.remove("btn-stop");
@@ -178,37 +202,37 @@
     requestDraw();
   }
 
-  async function poll() {
-    if (!state.running) return;
-    const started = performance.now();
-    try {
-      const rows = await fetchNew(state.lastId);
-      if (rows.length) ingest(rows);
-      if (state.running) setConn("live", rows.length ? `Live · ${state.lastSession || "session"}` : "Live · waiting for new rows");
-    } catch (e) {
-      if (state.running) setConn("err", `Retrying: ${e.message}`);
-    }
-    updateStats();
-    if (!state.running) return;
-    const elapsed = performance.now() - started;
-    state.pollTimer = setTimeout(poll, Math.max(50, Number(cfg.pollMs) - elapsed));
-  }
-
   function ingest(rows) {
     const now = Date.now();
+    const newest = Number(rows[rows.length - 1].at);
+    if (Number.isFinite(newest)) {
+      // Phone clock -> browser clock. Smoothed, so latency jitter does not nudge the axis.
+      const off = now - newest;
+      state.clockOffsetMs = state.clockOffsetMs === null ? off : state.clockOffsetMs + (off - state.clockOffsetMs) * 0.2;
+      // Longest gap between batches recently: the axis must trail the data by at least this much to stay smooth.
+      if (state.lastArrival !== null) state.batchGap = Math.max((now - state.lastArrival) / 1000, state.batchGap * 0.9);
+      state.lastArrival = now;
+    }
     for (const r of rows) {
-      const at = Date.parse(r.recorded_at);
+      const at = Number(r.at);
       if (!Number.isFinite(at)) continue;
       if (state.t0 === null) state.t0 = at;
-      const bump = Number(r.anomaly_detected) === 1;
+      const bump = Number(r.flag) === 1;
       const p = {
         id: r.id, t: (at - state.t0) / 1000, at,
         ax: Number(r.ax), ay: Number(r.ay), az: Number(r.az), bump,
-        lat: r.latitude, lon: r.longitude,
-        session: `${r.session_date} #${r.session_number}`,
+        lat: r.lat ?? null, lon: r.lon ?? null,
+        session: r.session || "session",
       };
+      if (state.detector && [p.ax, p.ay, p.az].every(Number.isFinite)) {
+        const o = state.detector.step(p.t, p.ax, p.ay, p.az);
+        p.mag = o.mag; p.hp = o.ahp; p.thr = o.threshold;
+        if (o.event) {
+          state.detEvents.push({ t: p.t, at, lat: p.lat, lon: p.lon, session: p.session, g: o.ahp });
+          signalDetect(p, o);
+        }
+      }
       state.points.push(p);
-      state.lastId = Math.max(state.lastId, r.id);
       state.lastSession = p.session;
 
       if (bump) {
@@ -233,10 +257,13 @@
     if (i > 0) state.points.splice(0, i);
     if (state.points.length > MAX_POINTS) state.points.splice(0, state.points.length - MAX_POINTS);
     state.spans = state.spans.filter((s) => s.t1 >= cutoff);
+    if (state.detEvents.length > 500) state.detEvents.splice(0, state.detEvents.length - 500);
 
     el.sessionChip.textContent = state.lastSession;
+    setConn("live", `Live · ${state.lastSession}`);
     renderEvents();
     renderTable();
+    updateStats();
     requestDraw();
   }
 
@@ -249,11 +276,13 @@
     el.statRate.textContent = state.running ? Math.round(state.rateWindow.length / 2) : "0";
     el.statLag.textContent = last && state.running ? Math.max(0, (now - last.at) / 1000).toFixed(1) : "—";
     el.statBumps.textContent = state.events.length;
-    el.eventsCount.textContent = state.events.length;
+    el.statDet.textContent = state.detEvents.length;
+    el.eventsCount.textContent = state.events.length + state.detEvents.length;
     if (last) {
       el.now.ax.textContent = fmt(last.ax);
       el.now.ay.textContent = fmt(last.ay);
       el.now.az.textContent = fmt(last.az);
+      el.now.hp.textContent = Number.isFinite(last.hp) ? `${fmt(last.hp)} g · bar ${Number.isFinite(last.thr) ? last.thr.toFixed(2) : "—"} g` : "—";
     }
   }
   const fmt = (v) => (Number.isFinite(v) ? v.toFixed(3) : "—");
@@ -262,7 +291,7 @@
   let signalTimer = null;
   function setSignalIdle() {
     el.signal.classList.remove("active");
-    el.signalText.textContent = state.running ? "Watching for anomalies" : "Idle";
+    el.signalText.textContent = state.running ? "No bump" : "Idle";
     el.signalSub.textContent = "Detect Bump on the phone flags rows";
   }
   function signalBump(p) {
@@ -278,8 +307,25 @@
     clearTimeout(signalTimer);
     signalTimer = setTimeout(() => {
       el.signal.classList.remove("active");
-      el.signalText.textContent = "Watching for anomalies";
+      el.signalText.textContent = "No bump";
       el.signalSub.textContent = `last bump at t = ${p.t.toFixed(1)} s`;
+    }, 2500);
+  }
+  function signalDetect(p, o) {
+    el.signal.classList.remove("active");
+    void el.signal.offsetWidth;
+    el.signal.classList.add("active");
+    el.signalText.textContent = "Bump detected · filter";
+    el.signalSub.textContent = `|hp| ${o.ahp.toFixed(2)} g > ${o.threshold.toFixed(2)} g · t = ${p.t.toFixed(1)} s`;
+    el.flash.classList.remove("on");
+    void el.flash.offsetWidth;
+    el.flash.classList.add("on");
+    if (el.soundChk.checked) beep();
+    clearTimeout(signalTimer);
+    signalTimer = setTimeout(() => {
+      el.signal.classList.remove("active");
+      el.signalText.textContent = "No bump";
+      el.signalSub.textContent = `last filter detection at t = ${p.t.toFixed(1)} s`;
     }, 2500);
   }
   let audioCtx = null;
@@ -300,17 +346,22 @@
   // ---------- lists ----------
   function renderEvents() {
     el.events.replaceChildren();
-    if (!state.events.length) {
+    const all = [
+      ...state.events.map((e) => Object.assign({ kind: "app" }, e)),
+      ...state.detEvents.map((e) => Object.assign({ kind: "filter" }, e)),
+    ].sort((a, b) => a.t - b.t);
+    if (!all.length) {
       const li = document.createElement("li");
       li.className = "empty";
       li.textContent = "No bumps yet this session.";
       el.events.appendChild(li);
       return;
     }
-    for (const ev of state.events.slice(-30).reverse()) {
-      const li = document.createElement("li");
+    for (const ev of all.slice(-30).reverse()) {
+      const li = document.createElement("li"); li.className = ev.kind;
       const t = document.createElement("span"); t.className = "t"; t.textContent = `t = ${ev.t.toFixed(1)} s`;
-      const when = document.createElement("span"); when.textContent = new Date(ev.at).toLocaleTimeString();
+      const when = document.createElement("span");
+      when.textContent = ev.kind === "filter" ? `filter · ${ev.g.toFixed(2)} g · ${new Date(ev.at).toLocaleTimeString()}` : `phone flag · ${new Date(ev.at).toLocaleTimeString()}`;
       const loc = document.createElement("span"); loc.className = "loc";
       loc.textContent = Number.isFinite(Number(ev.lat)) && ev.lat !== null
         ? `${Number(ev.lat).toFixed(5)}, ${Number(ev.lon).toFixed(5)}` : "no GPS fix";
@@ -324,14 +375,14 @@
     if (!rows.length) {
       const tr = document.createElement("tr");
       const td = document.createElement("td");
-      td.colSpan = 5; td.className = "empty"; td.textContent = state.running ? "Waiting for rows…" : "Start a session to see rows.";
+      td.colSpan = 6; td.className = "empty"; td.textContent = state.running ? "Waiting for rows…" : "Start a session to see rows.";
       tr.appendChild(td); el.table.appendChild(tr);
       return;
     }
     for (const p of rows) {
       const tr = document.createElement("tr");
       if (p.bump) tr.className = "bump";
-      for (const v of [p.t.toFixed(2), fmt(p.ax), fmt(p.ay), fmt(p.az), p.bump ? "1" : "0"]) {
+      for (const v of [p.t.toFixed(2), fmt(p.ax), fmt(p.ay), fmt(p.az), fmt(p.hp), p.bump ? "1" : "0"]) {
         const td = document.createElement("td"); td.textContent = v; tr.appendChild(td);
       }
       el.table.appendChild(tr);
@@ -360,15 +411,26 @@
     xRange() {
       const W = state.windowSeconds;
       const last = state.points[state.points.length - 1];
-      const tEnd = last ? Math.max(last.t, W) : W;
+      let tEnd = last ? last.t : 0;
+      if (state.running && last && state.clockOffsetMs !== null) {
+        // Phone time "now" as seen from the browser, minus the display lag, in session seconds.
+        const phoneNow = Date.now() - state.clockOffsetMs;
+        const tClock = (phoneNow - state.t0) / 1000 - state.displayLag;
+        tEnd = Math.max(tClock, last.t - 0.25);   // never hide more than a quarter second of real data
+      }
+      tEnd = Math.max(tEnd, W);
       return [tEnd - W, tEnd];
     }
     xOf(t, [x0, x1]) { return this.pad.l + ((t - x0) / (x1 - x0)) * (this.w - this.pad.l - this.pad.r); }
     yOf(v) { return this.pad.t + (1 - (v - this.yMin) / (this.yMax - this.yMin)) * (this.h - this.pad.t - this.pad.b); }
     updateScale(visible) {
       let lo = Infinity, hi = -Infinity;
-      for (const p of visible) { const v = p[this.key]; if (v < lo) lo = v; if (v > hi) hi = v; }
-      if (!visible.length) { lo = -1; hi = 1; }
+      for (const p of visible) {
+        const v = p[this.key]; if (!Number.isFinite(v)) continue; if (v < lo) lo = v; if (v > hi) hi = v;
+        if (this.key === "hp" && Number.isFinite(p.thr) && p.thr > hi) hi = p.thr;
+      }
+      if (!visible.length || lo === Infinity) { lo = this.key === "hp" ? 0 : -1; hi = 1; }
+      if (this.key === "hp") lo = 0;
       if (hi - lo < 0.2) { const m = (hi + lo) / 2; lo = m - 0.1; hi = m + 0.1; }
       const pad = (hi - lo) * 0.12;
       const tLo = lo - pad, tHi = hi + pad;
@@ -432,6 +494,7 @@
         c.beginPath();
         for (let i = 0; i < visible.length; i++) {
           const p = visible[i];
+          if (!Number.isFinite(p[this.key])) continue;
           const x = this.xOf(p.t, xr), y = this.yOf(p[this.key]);
           if (i === 0) c.moveTo(x, y); else c.lineTo(x, y);
         }
@@ -489,7 +552,7 @@
     return v.toFixed(d);
   }
 
-  const charts = [new LineChart($("axChart"), "ax"), new LineChart($("ayChart"), "ay"), new LineChart($("azChart"), "az")];
+  const charts = [new LineChart($("axChart"), "ax"), new LineChart($("ayChart"), "ay"), new LineChart($("azChart"), "az"), new LineChart($("hpChart"), "hp")];
 
   function showTooltip(e) {
     const xr = charts[0].xRange();
@@ -499,13 +562,14 @@
     el.tooltip.replaceChildren();
     const t = document.createElement("div"); t.className = "tt-t"; t.textContent = `t = ${p.t.toFixed(2)} s`;
     el.tooltip.appendChild(t);
-    for (const [label, v] of [["ax", p.ax], ["ay", p.ay], ["az", p.az]]) {
+    for (const [label, v] of [["ax", p.ax], ["ay", p.ay], ["az", p.az], ["|hp|", p.hp]]) {
       const row = document.createElement("div"); row.className = "tt-row";
       const s = document.createElement("strong"); s.textContent = `${fmt(v)} g`;
       const l = document.createElement("span"); l.textContent = label;
       row.append(s, l); el.tooltip.appendChild(row);
     }
     if (p.bump) { const b = document.createElement("div"); b.className = "tt-bump"; b.textContent = "Bump observation"; el.tooltip.appendChild(b); }
+    if (state.detEvents.some((ev) => Math.abs(ev.t - p.t) < 0.15)) { const b = document.createElement("div"); b.className = "tt-bump"; b.textContent = "Filter detection"; el.tooltip.appendChild(b); }
     const host = el.charts.getBoundingClientRect();
     let x = e.clientX - host.left + 14, y = e.clientY - host.top + 14;
     el.tooltip.hidden = false;
@@ -517,33 +581,55 @@
   function hideTooltip() { el.tooltip.hidden = true; }
 
   function requestDraw() {
+    if (state.rafId !== null) return;          // the frame loop is already drawing every frame
     if (state.needsDraw) return;
     state.needsDraw = true;
     requestAnimationFrame(() => { state.needsDraw = false; for (const ch of charts) ch.draw(); });
   }
+  let lastFrame = 0;
+  function frame(ts) {
+    if (!state.running) { state.rafId = null; return; }
+    const dt = lastFrame ? Math.min(0.1, (ts - lastFrame) / 1000) : 0;
+    lastFrame = ts;
+    // Ease the display lag toward the measured batch latency plus a small margin, so the axis never jumps.
+    const target = Math.min(8, Math.max(0.4, state.batchGap * 1.15 + 0.25));
+    state.displayLag += (target - state.displayLag) * (1 - Math.exp(-dt / 1.5));
+    for (const ch of charts) ch.draw();
+    state.rafId = requestAnimationFrame(frame);
+  }
+  function startFrames() { if (state.rafId === null) { lastFrame = 0; state.rafId = requestAnimationFrame(frame); } }
+  function stopFrames() { if (state.rafId !== null) { cancelAnimationFrame(state.rafId); state.rafId = null; } requestDraw(); }
   window.addEventListener("resize", () => { for (const ch of charts) ch.resize(); requestDraw(); });
 
   // ---------- settings dialog ----------
   function fillSettings() {
-    el.cfgUrl.value = cfg.supabaseUrl || ""; el.cfgKey.value = cfg.supabaseKey || "";
-    el.cfgTable.value = cfg.table || "readings"; el.cfgPoll.value = cfg.pollMs || 500;
+    el.cfgUrl.value = cfg.serverUrl || "";
+    el.cfgUrl.placeholder = serverBase();
   }
   function applyConfig() {
-    el.tableName.textContent = cfg.table;
-    el.pollMs.textContent = cfg.pollMs;
     checkConnection();
   }
   el.settingsBtn.addEventListener("click", () => { fillSettings(); el.settings.showModal(); });
   el.cfgCancel.addEventListener("click", () => el.settings.close());
   el.cfgReset.addEventListener("click", () => { localStorage.removeItem(STORAGE_KEY); cfg = loadConfig(); fillSettings(); });
   el.settingsForm.addEventListener("submit", () => {
-    cfg = Object.assign({}, cfg, {
-      supabaseUrl: el.cfgUrl.value.trim(), supabaseKey: el.cfgKey.value.trim(),
-      table: el.cfgTable.value.trim() || "readings", pollMs: Math.max(100, Number(el.cfgPoll.value) || 500),
-    });
+    cfg = Object.assign({}, cfg, { serverUrl: el.cfgUrl.value.trim() });
     localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg));
     applyConfig();
   });
+
+  // ---------- bump filter controls ----------
+  function currentThreshold() { return Math.max(0.05, Number(el.thrInput.value) || Number(cfg.hpThreshold) || 0.8); }
+  function applyFilterControls() {
+    el.thrInput.disabled = el.adaptChk.checked;
+    el.thrNow.textContent = el.adaptChk.checked ? "median + 15 × MAD, last 10 s" : `${currentThreshold().toFixed(2)} g`;
+    if (state.detector) { state.detector.setThreshold(currentThreshold()); state.detector.setAdaptive(el.adaptChk.checked); }
+  }
+  el.thrInput.value = Number(cfg.hpThreshold) || 0.8;
+  el.adaptChk.checked = Boolean(cfg.hpAdaptive);
+  el.thrInput.addEventListener("input", applyFilterControls);
+  el.adaptChk.addEventListener("change", applyFilterControls);
+  applyFilterControls();
 
   // ---------- wire up ----------
   el.startBtn.addEventListener("click", start);

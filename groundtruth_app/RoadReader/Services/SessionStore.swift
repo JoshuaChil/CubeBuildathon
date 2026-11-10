@@ -169,20 +169,9 @@ final class SessionStore: ObservableObject {
         }
     }
 
-    /// Records that `name` is already in Supabase (used by live broadcasting when a session ends complete).
-    static func storeReceipt(_ receipt: SupabaseUploader.Receipt, forSession name: String) {
-        var receipts = storedReceipts()
-        receipts[name] = receipt
-        storeReceipts(receipts)
-    }
-
     /// Highest session number this phone has already used for `date` (0 if none).
-    static func localMaxSessionNumber(date: String) -> Int {
-        storedReceipts().values.filter { $0.sessionDate == date }.map(\.sessionNumber).max() ?? 0
-    }
-
     private func localMaxSessionNumber(date: String) -> Int {
-        Self.localMaxSessionNumber(date: date)
+        Self.storedReceipts().values.filter { $0.sessionDate == date }.map(\.sessionNumber).max() ?? 0
     }
 
     private func update(_ name: String, _ change: (inout SessionInfo) -> Void) {

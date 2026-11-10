@@ -44,7 +44,7 @@ struct ReadingsView: View {
                 }
                 Spacer()
 
-                if session.settings.supabaseCredentials != nil {
+                if let dashboard = session.settings.dashboardEndpoint {
                     Toggle(isOn: Binding(
                         get: { session.settings.liveBroadcastEnabled },
                         set: { session.settings.liveBroadcastEnabled = $0 }
@@ -52,7 +52,7 @@ struct ReadingsView: View {
                         Label {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("Live Broadcasting").font(.body.weight(.medium))
-                                Text("Stream rows to Supabase in real time while recording")
+                                Text("Stream rows to the live dashboard at \(dashboard.host ?? "")\(dashboard.port.map { ":\($0)" } ?? "")")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -116,7 +116,7 @@ struct ReadingsView: View {
             parts.append("streamed to \(session.settings.forwardHost):\(session.settings.forwardPort)")
         }
         if session.settings.canBroadcastLive {
-            parts.append("broadcast live to Supabase")
+            parts.append("broadcast live to the dashboard")
         }
         return parts.joined(separator: ", ") + "."
     }
@@ -141,10 +141,11 @@ private struct LiveBroadcastBar: View {
                     Text(session.broadcaster.status.title)
                         .font(.caption.weight(.bold))
                         .foregroundStyle(color)
-                    if session.broadcaster.sessionNumber > 0 {
-                        Text("Session \(session.broadcaster.sessionDate) #\(session.broadcaster.sessionNumber)")
+                    if !session.broadcaster.destination.isEmpty {
+                        Text("→ \(session.broadcaster.destination)")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
                 }
                 Text(detail)
@@ -170,7 +171,7 @@ private struct LiveBroadcastBar: View {
     }
 
     private var detail: String {
-        var parts = ["\(session.broadcastSent.formatted()) rows in Supabase"]
+        var parts = ["\(session.broadcastSent.formatted()) rows on dashboard"]
         if session.broadcastPending > 0 { parts.append("\(session.broadcastPending.formatted()) queued") }
         if session.broadcastDropped > 0 { parts.append("\(session.broadcastDropped.formatted()) dropped") }
         if case .retrying(let message) = session.broadcaster.status { parts.append(message) }

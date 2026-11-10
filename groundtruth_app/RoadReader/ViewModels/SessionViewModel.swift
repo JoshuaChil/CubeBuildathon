@@ -16,8 +16,8 @@ final class SessionViewModel: ObservableObject {
     let analysis = AnalysisClient()
     /// Recorded ride played back instead of the sensor (no ESP32 needed).
     let demo = DemoRide()
-    /// Live Broadcasting into Supabase (Settings > Supabase > Live broadcast).
-    let broadcaster = LiveBroadcaster()
+    /// Live Broadcasting to the GroundTruth dashboard server (Settings > Live dashboard).
+    let broadcaster = DashboardStreamer()
 
     @Published private(set) var isReading = false
     /// True while the app runs on the bundled demo ride instead of a Bluetooth sensor.
@@ -118,10 +118,9 @@ final class SessionViewModel: ObservableObject {
             bluetooth.startStreaming()
         }
 
-        if settings.canBroadcastLive, let creds = settings.supabaseCredentials {
-            let date = SupabaseUploader.sessionDate(for: Date())
-            broadcaster.start(credentials: creds, sessionDate: date,
-                              minimumNumber: SessionStore.localMaxSessionNumber(date: date) + 1)
+        if settings.canBroadcastLive, let url = settings.dashboardEndpoint {
+            let name = recorder.currentFileURL?.deletingPathExtension().lastPathComponent ?? "session"
+            broadcaster.start(baseURL: url, session: name, deviceID: settings.deviceID)
         }
         broadcastSent = 0
         broadcastPending = 0
@@ -144,7 +143,6 @@ final class SessionViewModel: ObservableObject {
 
     func stopReadings() {
         guard isReading else { return }
-        let sessionName = recorder.currentFileURL?.lastPathComponent
         if isDemo {
             demo.stop()
         } else {
@@ -156,13 +154,11 @@ final class SessionViewModel: ObservableObject {
         if broadcaster.isActive {
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                let receipt = await self.broadcaster.stop()
-                if let receipt, let sessionName {
-                    SessionStore.storeReceipt(receipt, forSession: sessionName)
-                } else {
+                let complete = await self.broadcaster.stop()
+                if !complete {
                     let missing = self.broadcaster.undeliveredRows + self.broadcaster.droppedRows
                     if missing > 0 {
-                        self.errorMessage = "Live broadcast ended with \(missing) rows not delivered to Supabase. Upload the session from Sessions to send it in full."
+                        self.errorMessage = "Live broadcast ended with \(missing) rows not delivered to the dashboard. The full session is still saved on this phone."
                     }
                 }
                 self.broadcastSent = self.broadcaster.sentRows

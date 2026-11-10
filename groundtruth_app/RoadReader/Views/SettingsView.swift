@@ -72,6 +72,28 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    Toggle("Live Broadcasting while recording", isOn: $settings.liveBroadcastEnabled)
+                        .disabled(settings.dashboardEndpoint == nil)
+                    TextField("Dashboard URL (http://192.168.1.100:8090)", text: $settings.dashboardURL)
+                        .keyboardType(.URL)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                    if let url = settings.dashboardEndpoint {
+                        Label("Rows go to \(url.absoluteString)/ingest", systemImage: "checkmark.circle.fill")
+                            .font(.footnote)
+                            .foregroundStyle(.green)
+                    } else {
+                        Label("Enter the dashboard server address (or set a forwarding host)", systemImage: "exclamationmark.triangle")
+                            .font(.footnote)
+                            .foregroundStyle(.orange)
+                    }
+                } header: {
+                    Text("Live dashboard")
+                } footer: {
+                    Text("Run software/dashboard/server.py on a computer on the same Wi-Fi and open its page in a browser. Leave the URL blank to use the forwarding host on port 8090. While recording, readings are sent to the server about four times a second and every open browser draws them within a second; nothing is written to a database. Rows are queued and retried if the connection drops.")
+                }
+
+                Section {
                     TextField("Project URL (https://xxxx.supabase.co)", text: $settings.supabaseURL)
                         .keyboardType(.URL)
                         .autocorrectionDisabled()
@@ -80,8 +102,6 @@ struct SettingsView: View {
                     TextField("Table", text: $settings.supabaseTable)
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
-                    Toggle("Live Broadcasting while recording", isOn: $settings.liveBroadcastEnabled)
-                        .disabled(settings.supabaseCredentials == nil)
                     if settings.supabaseCredentials != nil {
                         Label("Ready: uploads go to \(settings.supabaseTable)", systemImage: "checkmark.circle.fill")
                             .font(.footnote)
@@ -94,7 +114,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Supabase")
                 } footer: {
-                    Text("Sessions > Upload inserts one row per reading: session_date, session_number, recorded_at, ax–gz, latitude, longitude, anomaly_detected. Create the table with supabase/schema.sql. The anon key is from Project Settings > API.\n\nLive Broadcasting inserts the same rows about once a second while you record, so a dashboard can follow the ride in real time (enable Realtime on the table with the block at the end of schema.sql). Rows are queued and retried if the connection drops; the Sessions list marks a live session as uploaded only if every row arrived.")
+                    Text("Sessions > Upload inserts one row per reading: session_date, session_number, recorded_at, ax–gz, latitude, longitude, anomaly_detected. Create the table with supabase/schema.sql. The anon key is from Project Settings > API. Uploads happen only when you ask for them; the live stream never touches Supabase.")
                 }
 
                 Section {
